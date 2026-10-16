@@ -1,0 +1,20 @@
+{
+ "name": "Oxypro Method Statement Generator",
+ "short_name": "MST Generator",
+ "start_url": "./",
+ "display": "standalone",
+ "background_color": "#ffffff",
+ "theme_color": "#c4122f",
+ "icons": [
+  {
+   "src": "icon-192.png",
+   "sizes": "192x192",
+   "type": "image/png"
+  },
+  {
+   "src": "icon-256.png",
+   "sizes": "256x256",
+   "type": "image/png"
+  }
+ ]
+}
