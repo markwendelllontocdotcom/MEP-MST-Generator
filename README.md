@@ -1,4 +1,4 @@
-# Oxypro Method Statement Generator – web version
+# Oxypro MSRA Generator – web version
 
 Open the app: **https://markwendelllontocdotcom.github.io/MEP-MST-Generator/**
 

@@ -1,6 +1,6 @@
 {
- "name": "Oxypro Method Statement Generator",
- "short_name": "MST Generator",
+ "name": "Oxypro MSRA Generator",
+ "short_name": "MSRA Generator",
  "start_url": "./",
  "display": "standalone",
  "background_color": "#ffffff",
