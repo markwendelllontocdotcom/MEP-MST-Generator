@@ -269,6 +269,20 @@ table.xl td{padding:1px 3px;overflow:hidden;line-height:1.2}
 .xl-hf{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;font:9pt Calibri,Carlito,Arial,sans-serif;color:#333}
 .xl-hf.h{margin-bottom:8px}.xl-hf.f{margin-top:8px}
 .xl-hf span:nth-child(2){text-align:center}.xl-hf span:nth-child(3){text-align:right}
+/* Material Submittal Log (21 Oct 2026) */
+.msl-card .hd{flex-wrap:wrap}
+.msl-disc{font-size:13px;margin:-4px 0 8px}
+.msl-unlinked summary{cursor:pointer;font-weight:600}
+.msl-unlinked ul{margin:8px 0;padding-left:20px;columns:2 360px;column-gap:28px;font-size:13.5px}
+.msl-unlinked li{break-inside:avoid;margin-bottom:3px}
+.mref-wrap{margin-top:16px}
+table.mref{width:100%;border-collapse:collapse;font-size:13.5px;min-width:760px}
+table.mref th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);text-align:left;padding:6px;border-bottom:1px solid var(--line);background:var(--sunk)}
+table.mref td{padding:5px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+table.mref td:first-child{width:36px}
+table.mref select{width:100%;max-width:330px;font-size:13px;padding:4px 6px}
+table.mref input{width:100%;min-width:150px;font-size:13px;padding:4px 6px}
+table.mref .mref-val{font-family:var(--f-mono);font-size:12.5px;min-width:150px;word-break:break-word}
 
 
 </style>
@@ -279,6 +293,7 @@ table.xl td{padding:1px 3px;overflow:hidden;line-height:1.2}
     <span class="pill" id="ai-pill">Offline mode</span>
     <button class="btn small" id="btn-new-project" type="button" aria-haspopup="dialog">New project</button>
     <button class="btn small" id="btn-save-project" type="button">Save project</button>
+    <button class="btn small" id="btn-save-as" type="button" title="Save the project with your own file name and folder">Save as…</button>
     <label class="btn small">Open project<input type="file" id="open-project" accept=".json" class="hidden-input"></label>
     <button class="btn small" id="btn-about" type="button" aria-haspopup="dialog">About</button>
   </div>
@@ -326,6 +341,14 @@ table.xl td{padding:1px 3px;overflow:hidden;line-height:1.2}
     <p class="msra-note" id="msra-note-online" hidden>In the online version the page cannot start programs on your computer, so “Convert to PDF” is double-clicked by hand. The offline copy (“Open offline copy” in the app folder) starts it for you.</p>
   </div>
   <div class="about-ft"><button type="button" class="btn" id="msra-cancel">Cancel</button></div>
+</dialog>
+<dialog class="about saveas-dlg" id="saveas-dlg" aria-labelledby="saveas-title">
+  <div class="about-hd"><div><h2 id="saveas-title">Save project as</h2><div class="muted">Project file (.json) – open it again with “Open project”</div></div></div>
+  <form class="about-bd" id="saveas-form" method="dialog">
+    <div class="field"><label for="saveas-name">File name</label><input type="text" id="saveas-name" autocomplete="off" spellcheck="false"></div>
+    <p class="msra-note" id="saveas-note">This browser saves the file in its Downloads folder. To choose the folder each time, turn on “Ask where to save each file before downloading” in the browser's download settings.</p>
+  </form>
+  <div class="about-ft"><button type="button" class="btn" id="saveas-cancel">Cancel</button><button type="button" class="btn primary" id="saveas-ok">Save</button></div>
 </dialog>
 <dialog class="about np-dlg" id="np-dlg" aria-labelledby="np-title">
   <div class="about-hd"><div><h2 id="np-title">Start a new project?</h2><div class="muted" id="np-current">–</div></div></div>
@@ -1513,9 +1536,8 @@ async function buildMsDocx(row, opts = {}) {   // opts.withRa: MSRA wording (RA 
   // 5 (5.1 Schedule of Materials is part of the fixed text)
   H1('APPLICABLE DOCUMENTS AND REFERENCES');
   B.push(...blk('S5'));
-  const mats = (e.materials || []).map((m, i) => ({ cells: [{ t: String(i + 1), jc: 'center' }, { t: m }, { t: '' }] }));
-  const rel = (row.related || '').split(/;\s*/).filter(Boolean);
-  if (rel.length) rel.forEach((r, i) => { if (mats[i]) mats[i].cells[2].t = r; else mats.push({ cells: [{ t: String(mats.length + 1), jc: 'center' }, { t: '' }, { t: r }] }); });
+  // Material Submittal Ref.: matched from the Material Submittal Log, a typed reference, or (older projects) the related submittals in line order
+  const mats = matRefRows(row, e).map((x, i) => ({ cells: [{ t: String(i + 1), jc: 'center' }, { t: x.mat }, { t: x.ref }] }));
   if (mats.length) B.push(TBL([630, 5670, 3060], [{ header: true, cells: [Object.assign(HEAD('No.'), { jc: 'center' }), HEAD('Material / Item'), HEAD('Material Submittal Ref.')] }, ...mats], { ind: 355 }), SP(120));
   H2('Codes, Standards and Authority Requirements');
   B.push(...blk('S5B'));
@@ -2567,6 +2589,243 @@ async function trOutput(kind) {
 
 (function () { try { const st = document.createElement('style'); st.id = 'trsheet-css'; st.textContent = TR_CSS; (document.head || document.body).appendChild(st); } catch (e) { } })();
 
+/* ============================================================ MATERIAL SUBMITTAL LOG
+   User, 21 Oct 2026: "Please add Material Submittal Log button to capture the Material submittal references".
+   "Import Material Submittal Log" (Method Statements tab) reads the project's Material Submittal Log
+   (one sheet per discipline: No. | Unifier Ref. Number | Item Description | Material Submittal Reference No. |
+   … | Rev. | … | Status | Final Status) into S.msl. Each Method Statement's Section 5.1 Schedule of Materials
+   then gets, for every material line, the reference of the log item that matches it by description
+   (tuned on The Borough log: 97 items against the 71 Method Statements – 168 of 448 lines matched, consumables
+   such as tape, clamps and fixings stay blank). The General tab shows the matches; each line can be set to
+   another log item, to none, or given a typed reference. Importing the log again refreshes every reference. */
+
+const MSL_STOP = new Set('and or the of for with to in on a an as per by approved submittal submittals including incl type etc all other minimum min mm where required specified from at be is are system systems accessories accessory complete set sets each its any into under over via use used new existing project specification'.split(' '));
+const MSL_SYN = {
+  chw: ['chilled', 'water'], fcu: ['fan', 'coil', 'unit'], fahu: ['fresh', 'air', 'handling', 'unit'], ahu: ['air', 'handling', 'unit'],
+  picv: ['pressure', 'independent', 'control', 'valve'], vcd: ['volume', 'control', 'damper'], nrv: ['non', 'return', 'valve'], drv: ['double', 'regulating', 'valve'],
+  prv: ['pressure', 'reducing', 'valve'], db: ['distribution', 'board'], smdb: ['sub', 'main', 'distribution', 'board'], mdb: ['main', 'distribution', 'board'],
+  ups: ['uninterruptible', 'power', 'supply'], ductwork: ['duct'], pipework: ['pipe'], aluminum: ['aluminium'], pi: ['pre', 'insulated'], galvanised: ['gi'], galvanized: ['gi'],
+  fahus: ['fresh', 'air', 'handling', 'unit'], fcus: ['fan', 'coil', 'unit']
+};
+const MSL_DISCW = { MEC: ['hvac', 'mechanical'], PLU: ['plumbing'], ELE: ['electrical'], ELV: ['elv', 'low', 'current'], FF: ['fire', 'fighting', 'protection'], LPG: ['lpg', 'gas'], MEP: ['mep'] };
+const MSL_CONFLICT = [['above', 'below'], ['internal', 'external'], ['indoor', 'outdoor'], ['hot', 'cold'], ['underground', 'overhead']];
+
+function mslStem(w) {
+  if (w.length > 4 && w.endsWith('ies')) return w.slice(0, -3) + 'y';
+  if (w.length > 4 && /(ses|xes|ches|shes)$/.test(w)) return w.slice(0, -2);
+  if (w.length > 3 && w.endsWith('s') && !w.endsWith('ss')) return w.slice(0, -1);
+  return w;
+}
+function mslToks(s) {
+  const out = [];
+  (String(s || '').toLowerCase().replace(/&/g, ' ').match(/[a-z0-9]+/g) || []).forEach(w => (MSL_SYN[w] || [w]).forEach(x => { x = mslStem(x); if (x.length > 1 && !MSL_STOP.has(x)) out.push(x); }));
+  return out;
+}
+/* the main noun phrase: before "(", " – ", ";", ":"; before the first comma when that part has 2+ words; before for / at / with … */
+function mslHead(s) {
+  let h = String(s || '').split(/\s[([]|\(|\s[–-]\s|;|:/)[0];
+  const c = h.split(',')[0]; if (mslToks(c).length >= 2) h = c;
+  const p = h.split(/\s(?:for|at|with|to|in|on|into|from|including|incl\.?)\s/i)[0];
+  return mslToks(p).length ? p : h;
+}
+function mslItemTok(it) {
+  if (!it._t) { const I = new Set(mslToks(it.desc)); const IH = new Set(mslToks(mslHead(it.desc))); it._t = { I, IH: IH.size ? IH : I }; }
+  return it._t;
+}
+function mslDisc(t) {
+  const s = String(t || '').toUpperCase().replace(/ELECTRO\s*-?\s*MECHANICAL/g, '');
+  if (/LOW CURRENT|\bELV\b|EXTRA LOW/.test(s)) return 'ELV';
+  if (/HVAC|MECHANICAL/.test(s)) return 'MEC';
+  if (/PLUMB|DRAINAGE/.test(s)) return 'PLU';
+  if (/ELECTRICAL/.test(s)) return 'ELE';
+  if (/FIRE/.test(s)) return 'FF';
+  if (/\bLPG\b|\bGAS\b/.test(s)) return 'LPG';
+  if (/\bMEP\b|GENERAL|BUILDER/.test(s)) return 'MEP';
+  return null;
+}
+const mslHas = () => !!(S.msl && Array.isArray(S.msl.items) && S.msl.items.length);
+function mslItem(k) { return mslHas() ? S.msl.items.find(i => i.k === k) || null : null; }
+function mslRef(it) { return it ? (it.ref || it.uni || '') : ''; }
+function mslLabel(it) { return `${it.k} · ${it.desc}`; }
+const mslKey = m => String(m || '').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 160);
+
+/* ---------- read the log */
+function parseMsl(wb) {
+  const items = [], seen = new Set();
+  wb.eachSheet(ws => {
+    let title = '', hdr = 0, cols = null, disc = null;
+    ws.eachRow({ includeEmpty: false }, (row, rn) => {
+      const vals = []; row.eachCell({ includeEmpty: true }, (c, cn) => { vals[cn] = cellText(c).replace(/\s+/g, ' ').trim(); });
+      const joined = vals.filter(Boolean).join(' | ');
+      const isTitle = /MATERIAL SUBMITTAL LOG/i.test(joined) && !/SUMMARY/i.test(joined);
+      if (!cols) {
+        if (isTitle) title = joined;
+        const di = vals.findIndex(v => v && /item description|^description$|material description|description of (material|item)|^material \/ item$|^material$/i.test(v));
+        const ri = vals.findIndex(v => v && /material submittal ref|submittal ref|reference no|ref\.?\s?no/i.test(v) && !/unifier/i.test(v));
+        const ni = vals.findIndex(v => v && /^(no\.?|s\.?\s?n\.?|sr\.?\s?no\.?|sl\.?\s?no\.?|item no\.?)$/i.test(v));
+        if (di > 0 && (ri > 0 || ni > 0)) {
+          cols = { desc: di, ref: ri > 0 ? ri : null, no: ni > 0 ? ni : null };
+          vals.forEach((v, i) => {
+            if (!v) return;
+            if (/unifier/i.test(v)) cols.uni = i;
+            else if (/^rev/i.test(v)) cols.rev = i;
+            else if (/manufacturer|supplier/i.test(v)) cols.mfr = i;
+            else if (/final status/i.test(v)) cols.final = i;
+            else if (/^status$/i.test(v)) cols.status = i;
+          });
+          disc = mslDisc(title) || mslDisc(ws.name) || null; hdr = rn;
+        }
+        return;
+      }
+      if (isTitle) { disc = mslDisc(joined) || disc; return; }                    // next discipline in the same sheet
+      if (rn === hdr + 1 && cols.status == null) { const si = vals.findIndex(v => v && /^status$/i.test(v)); if (si > 0) { cols.status = si; return; } }
+      const desc = vals[cols.desc] || '';
+      if (!desc || desc.length < 3 || /^total\b/i.test(desc) || /item description/i.test(desc)) return;
+      const no = cols.no != null ? parseInt(vals[cols.no], 10) : NaN;
+      if (cols.no != null && isNaN(no)) return;                                 // banners, sub-headers, notes
+      const d = disc || mslDisc(ws.name) || guessDisc(desc) || 'MEP';
+      let k = `${d}-${pad(isNaN(no) ? items.filter(x => x.disc === d).length + 1 : no, 2)}`;
+      while (seen.has(k)) k += '′';
+      seen.add(k);
+      const g = c => (c != null ? vals[c] || '' : '');
+      items.push({ k, disc: d, no: isNaN(no) ? null : no, desc, ref: g(cols.ref), uni: g(cols.uni), rev: g(cols.rev), status: g(cols.status), final: g(cols.final), mfr: g(cols.mfr), sheet: ws.name });
+    });
+  });
+  return items;
+}
+async function importMsl(file) {
+  toast('Reading Material Submittal Log…', 20000);
+  const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await file.arrayBuffer());
+  return useMsl(parseMsl(wb), file.name);
+}
+function useMsl(items, name) {
+  if (!items.length) { toast('No material items found. The log needs an “Item Description” column and a “No.” or “Material Submittal Reference No.” column.', 8000); return false; }
+  S.msl = { file: name, imported: todayISO(), items };
+  save(); render();
+  const withRef = items.filter(i => mslRef(i)).length;
+  toast(`${items.length} materials read from ${name} – ${withRef ? `${withRef} with a reference number` : 'none has a reference number yet'}`, 7000);
+  return true;
+}
+
+/* ---------- match one material line to the log */
+let MSL_CACHE = { ver: '', map: new Map() };
+function mslMatch(mat, disc) {
+  if (!mslHas() || !mat) return { items: [], amb: false };
+  const ver = S.msl.file + '|' + S.msl.imported + '|' + S.msl.items.length;
+  if (MSL_CACHE.ver !== ver) MSL_CACHE = { ver, map: new Map() };
+  const ck = disc + '|' + mat;
+  if (MSL_CACHE.map.has(ck)) return MSL_CACHE.map.get(ck);
+  const Mr = new Set(mslToks(mat)), head = mslHead(mat);
+  const segs = [new Set(mslToks(head))].concat(head.split(/\s\/\s|\s+or\s+/i).map(x => new Set(mslToks(x))).filter(x => x.size >= 2));
+  if (!segs[0].size) segs[0] = Mr;
+  const inter = (A, B) => { let n = 0; A.forEach(x => { if (B.has(x)) n++; }); return n; };
+  const cands = S.msl.items.map(it => {
+    const { I, IH } = mslItemTok(it);
+    const M = it.disc === disc ? new Set([...Mr, ...(MSL_DISCW[disc] || [])]) : Mr;   // the discipline's own words count as present
+    const n = inter(IH, Mr), cov = inter(IH, M) / IH.size, full = inter(I, M) / I.size;
+    const hc = Math.max(...segs.map(H => H.size ? inter(H, I) / H.size : 0));
+    const conflict = MSL_CONFLICT.some(([a, b]) => (I.has(a) && M.has(b) && !M.has(a)) || (I.has(b) && M.has(a) && !M.has(b)));
+    const s = cov * 0.6 + hc * 0.4 + full * 0.1 - (conflict ? 0.3 : 0) + (it.disc === disc ? 0.15 : 0);
+    const ok = (n >= 2 && cov >= 0.5 && hc >= 0.34 && cov + hc >= 1.3) || (IH.size === 1 && n === 1 && hc >= 0.5);
+    return { it, s, cov, ok };
+  }).filter(c => c.ok).sort((a, b) => b.s - a.s);
+  let items = [], amb = false;
+  if (cands.length) {
+    const b = cands[0]; items = [b.it];
+    const BF = mslItemTok(b.it).I;
+    for (const c of cands.slice(1, 12)) {
+      const CI = mslItemTok(c.it).IH; if ([...CI].every(x => BF.has(x))) continue;   // adds nothing to the best match
+      if (c.cov >= 0.99 && b.cov >= 0.99 && c.s >= b.s - 0.25) items.push(c.it);    // a line naming two submittals
+      else if (c.s >= b.s - 0.02) amb = true;                                         // two equally good, different items
+    }
+    if (amb) items = [];
+  }
+  const res = { items, amb };
+  MSL_CACHE.map.set(ck, res);
+  return res;
+}
+
+/* ---------- Section 5.1 rows: material, log items, reference and where it came from */
+function matRefRows(row, e) {
+  const mats = (e && e.materials) || [];
+  const legacy = (row.related || '').split(/;\s*/).filter(Boolean);
+  const hasLog = mslHas(), disc = (e && e.disc) || row.disc;
+  const ov = row.mref || {};
+  const out = mats.map((m, i) => {
+    const key = mslKey(m), o = ov[key] || {};
+    const auto = hasLog ? mslMatch(m, disc) : { items: [], amb: false };
+    let items = auto.items;
+    if (o.pick === 'none') items = [];
+    else if (o.pick && o.pick !== 'auto') items = o.pick.split(',').map(mslItem).filter(Boolean);
+    const fromLog = items.map(mslRef).filter(Boolean).join(' / ');
+    let ref = '', src = '';
+    if (o.manual) { ref = o.manual; src = 'manual'; }
+    else if (fromLog) { ref = fromLog; src = 'log'; }
+    else if (!hasLog && !('manual' in o) && legacy[i]) { ref = legacy[i]; src = 'legacy'; }
+    return { mat: m, key, items, auto, pick: o.pick || 'auto', manual: o.manual || '', ref, src };
+  });
+  if (!hasLog) legacy.slice(mats.length).forEach(r => out.push({ mat: '', key: '', items: [], auto: { items: [] }, pick: 'auto', manual: '', ref: r, src: 'legacy', extra: true }));
+  return out;
+}
+function setMatRef(row, key, patch) {
+  row.mref = row.mref || {};
+  const o = Object.assign(row.mref[key] || {}, patch);
+  if (o.pick === 'auto') delete o.pick;
+  row.mref[key] = o;
+}
+
+/* ---------- register card: what the log covers */
+function mslStats() {
+  const used = new Map();
+  S.register.forEach(r => { const e = getEntry(r); if (!e) return; matRefRows(r, e).forEach(x => x.items.forEach(it => used.set(it.k, (used.get(it.k) || 0) + 1))); });
+  return { used, withRef: S.msl.items.filter(i => mslRef(i)).length };
+}
+function vMsl() {
+  if (!mslHas()) return '';
+  const { used, withRef } = mslStats(), items = S.msl.items;
+  const unlinked = items.filter(i => !used.has(i.k));
+  const byDisc = DISC_ORDER.map(d => [d, items.filter(i => i.disc === d).length]).filter(x => x[1]);
+  return `<div class="card msl-card"><div class="hd"><h2>Material Submittal Log</h2><span class="muted mono">${esc(S.msl.file)}</span><span class="muted">imported ${esc(fmtDate(S.msl.imported))}</span><span class="grow"></span>
+    <label class="btn small">Import updated log<input type="file" data-msl="1" accept=".xlsx,.xlsm" class="hidden-input"></label>
+    ${S.ui.mslConfirm ? '<span>Remove the log from this project?</span><button class="btn small primary" type="button" data-act="msl-remove-yes">Remove</button><button class="btn small ghost" type="button" data-act="msl-remove-no">Keep</button>' : '<button class="btn small ghost" type="button" data-act="msl-remove">Remove log</button>'}</div>
+  <div class="bd">
+    <div class="counts">
+      <div><b>${items.length}</b><span>Materials in the log</span></div>
+      <div><b>${withRef}</b><span>With a reference number</span></div>
+      <div><b>${items.length - unlinked.length}</b><span>Linked to Method Statements</span></div>
+      <div><b>${unlinked.length}</b><span>Not linked</span></div>
+    </div>
+    <p class="lead">Each Method Statement's Schedule of Materials (Section 5.1) takes the reference of the log item that matches each material. Check or change the matches on the Method Statement's General tab. When the log is updated, import it again – every Method Statement picks up the new references.</p>
+    <div class="msl-disc muted">${byDisc.map(([d, n]) => `${esc(DISC[d] || d)} ${n}`).join(' · ')}</div>
+    ${withRef ? '' : '<div class="note">None of the materials in this log has a Material Submittal Reference No. or Unifier Ref. Number yet, so the reference column in Section 5.1 stays blank until the log is updated and imported again.</div>'}
+    ${unlinked.length ? `<details class="msl-unlinked"><summary>Materials not linked to any Method Statement (${unlinked.length})</summary><ul>${unlinked.map(i => `<li><span class="mono">${esc(i.k)}</span> ${esc(i.desc)}${mslRef(i) ? ` – <span class="mono">${esc(mslRef(i))}</span>` : ''}</li>`).join('')}</ul><p class="muted">These can be picked by hand on a Method Statement's General tab, or covered by a new Method Statement.</p></details>` : ''}
+  </div></div>`;
+}
+
+/* ---------- General tab: the Section 5.1 references */
+function eMatRefs(row, e) {
+  const rows = matRefRows(row, e).filter(x => !x.extra);
+  if (!rows.length) return '';
+  const hasLog = mslHas();
+  const opts = x => {
+    if (!hasLog) return '';
+    const autoLab = x.auto.items.length ? x.auto.items.map(i => i.k + ' ' + i.desc).join(' + ') : (x.auto.amb ? 'two items fit equally – pick one' : 'no matching item');
+    const d = (e.disc || row.disc);
+    const groups = [d, ...DISC_ORDER.filter(k => k !== d)].map(k => [k, S.msl.items.filter(i => i.disc === k)]).filter(g => g[1].length);
+    return `<select data-mpick="${esc(x.key)}" aria-label="Log item for ${esc(x.mat)}">
+      <option value="auto"${x.pick === 'auto' ? ' selected' : ''}>Auto: ${esc(autoLab.length > 70 ? autoLab.slice(0, 68) + '…' : autoLab)}</option>
+      <option value="none"${x.pick === 'none' ? ' selected' : ''}>None – no submittal for this item</option>
+      ${groups.map(([k, list]) => `<optgroup label="${esc(DISC[k] || k)}">${list.map(i => `<option value="${esc(i.k)}"${x.pick === i.k ? ' selected' : ''}>${esc((i.k + ' ' + i.desc).slice(0, 90))}</option>`).join('')}</optgroup>`).join('')}
+    </select>`;
+  };
+  const shown = x => x.ref ? esc(x.ref) : `<span class="muted">${x.items.length ? 'no reference in the log yet' : '–'}</span>`;
+  return `<div class="field mref-wrap"><label>Material Submittal Ref. – Schedule of Materials (Section 5.1)</label>
+    <div class="hint">${hasLog ? `From the Material Submittal Log <span class="mono">${esc(S.msl.file)}</span>, matched by material. Pick another log item, or type a reference to use instead.` : 'Type the reference for each material, or use “Import Material Submittal Log” on the Method Statements tab to fill them in from the log.'}</div>
+    <div class="scroll"><table class="mref"><thead><tr><th>No.</th><th>Material / Item</th>${hasLog ? '<th>Material Submittal Log item</th>' : ''}<th>Reference in the document</th><th>Type a reference${hasLog ? ' (optional)' : ''}</th></tr></thead><tbody>
+    ${rows.map((x, i) => `<tr><td class="mono">${i + 1}</td><td>${esc(x.mat)}</td>${hasLog ? `<td>${opts(x)}</td>` : ''}<td class="mref-val" data-mval="${esc(x.key)}">${shown(x)}</td><td><input type="text" data-mref="${esc(x.key)}" value="${esc(x.src === 'legacy' ? x.ref : x.manual)}" placeholder="${hasLog ? 'Leave blank to use the log' : `e.g. ${esc(S.project.code || 'PRJ')}-MEP-MS-001`}"></td></tr>`).join('')}
+    </tbody></table></div></div>`;
+}
+
 /* ============================================================ PREVIEW
    User, 17 Oct 2026: "Please provide a preview tab to have a quick check before exporting the file."
    Editor tab "Preview": builds the same file the download buttons make (Word Method Statement,
@@ -2972,9 +3231,11 @@ function vRegister() {
   ${imp ? vImport(imp) : ''}
   ${S.ui.addForm ? vAddForm() : ''}
   ${S.ui.tr ? vTransmittal() : ''}
+  ${vMsl()}
   <div class="card">
     <div class="hd"><h2>Method Statement register</h2><span class="grow"></span>
       <label class="btn small">Import MS Log<input type="file" id="up-log" accept=".xlsx,.xlsm" class="hidden-input"></label>
+      <label class="btn small" title="Reads the Material Submittal Log and puts each material's submittal reference in Section 5.1 of the Method Statements">Import Material Submittal Log<input type="file" data-msl="1" accept=".xlsx,.xlsm" class="hidden-input"></label>
       <button class="btn small" data-act="add-ms">Add Method Statement</button>
       <button class="btn small" data-act="tr-open" ${sel.length ? '' : 'disabled'} title="Print or export the selected Method Statements as a submittal log / transmittal">Log sheet &amp; transmittal (${sel.length})</button>
       <button class="btn primary" data-act="gen-selected" ${sel.length ? '' : 'disabled'}>Generate selected (${sel.length})</button>
@@ -3221,11 +3482,11 @@ function eGeneral(row, e) {
     ${ta('Scope of works (one item per line)', 'scope', e)}
     ${ta('Tools and equipment', 'tools', e, { tall: true })}
     ${ta('Materials', 'materials', e)}
-    <div class="field"><label for="r-related">Related material submittals (one per line)</label><textarea id="r-related" data-rbind="related" data-kind="semi">${esc((row.related || '').split(/;\s*/).filter(Boolean).join('\n'))}</textarea><div class="hint">Shown in the Schedule of Materials (Section 5.1).</div></div>
     ${ta('Delivery, handling and storage – activity-specific', 'storage', e)}
     ${ta('Material inspection points', 'material_checks', e)}
     ${ta('Coordination with other trades', 'coordination', e)}
-  </div>`;
+  </div>
+  ${eMatRefs(row, e)}`;
 }
 function eProcedure(row, e) {
   const sug = S.specs.length ? paramSuggestions(e) : {};
@@ -3357,6 +3618,14 @@ document.addEventListener('input', ev => {
   const row = curRow();
   if (!row) return;
   if (t.dataset.rbind) { const k = t.dataset.rbind; row[k] = t.dataset.kind === 'semi' ? lines(t.value).join('; ') : t.value; save(); return; }
+  if (t.dataset.mpick != null) return;      // log item choice: handled on change (no project edit of the MS)
+  if (t.dataset.mref != null) {      // Section 5.1: typed Material Submittal Ref.
+    setMatRef(row, t.dataset.mref, { manual: t.value.trim() ? t.value : '' });
+    const x = matRefRows(row, getEntry(row)).find(r => r.key === t.dataset.mref);
+    const cell = [...document.querySelectorAll('[data-mval]')].find(c => c.dataset.mval === t.dataset.mref);
+    if (cell && x) cell.innerHTML = x.ref ? esc(x.ref) : `<span class="muted">${x.items.length ? 'no reference in the log yet' : '–'}</span>`;
+    save(); return;
+  }
   const e = editEntry(row);
   if (t.dataset.ebind) { const k = t.dataset.ebind; e[k] = t.dataset.kind === 'lines' ? lines(t.value) : t.value; if (k === 'title') row.title = t.value; save(); return; }
   if (t.dataset.param != null) { e.params[+t.dataset.param].value = t.value; save(); return; }
@@ -3386,6 +3655,7 @@ document.addEventListener('change', async ev => {
     if (s) { let at = ra.steps.findIndex(x => x.std || /heat stress|housekeeping|final inspection/i.test(x.step || '')); if (at < 0) at = ra.steps.length; ra.steps.splice(at, 0, s); save(); render(); toast(`Added: ${s.step}`); }
     return;
   }
+  if (t.dataset.mpick != null) { const row = curRow(); if (row) { setMatRef(row, t.dataset.mpick, { pick: t.value }); save(); queueRender(); } return; }
   if (t.dataset.imp != null) { const imp = S.ui.importPreview; const r = imp.rows[+t.dataset.imp]; r.libId = t.value; r.score = 1; return; }
   if (t.dataset.aisel != null) { S.ui.ai.items[+t.dataset.aisel].on = t.checked; return; }
   if (t.id === 'add-title' || t.id === 'add-disc' || t.id === 'add-stage') { S.ui.addForm = { title: $('#add-title').value.trim(), disc: $('#add-disc').value, stage: $('#add-stage').value }; queueRender(); return; }
@@ -3418,6 +3688,7 @@ async function onFiles(input, files) {
     if (input.id === 'up-project') return await uploadProjectDocs(files);
     if (input.id === 'up-spec') return await uploadSpecs(files);
     if (input.id === 'up-log') return await importLog(files[0]);
+    if (input.dataset.msl) return await importMsl(files[0]);
     if (input.id === 'up-lib') return await importLibrary(files[0]);
     if (input.id === 'open-project') return await openProject(files[0]);
   } catch (err) { console.error(err); toast('Could not read ' + (files[0] && files[0].name) + ': ' + (err.message || err), 6000); }
@@ -3441,14 +3712,19 @@ async function uploadProjectDocs(files) {
   toast(filled ? `Filled ${filled} project fields – check them below` : 'No project fields recognised; fill them in manually', 5000);
 }
 async function uploadSpecs(files) {
-  const prog = $('#spec-progress');
+  const prog = $('#spec-progress'); let added = 0;
   for (let i = 0; i < files.length; i++) {
     const f = files[i];
     if (prog) prog.innerHTML = `<div class="muted">Reading ${esc(f.name)} (${i + 1} of ${files.length})…</div><div class="progress"><i style="width:${Math.round(i / files.length * 100)}%"></i></div>`;
     const r = await fileToText(f);
+    if (r.workbook && /MATERIAL SUBMITTAL/i.test(r.text)) {
+      const items = parseMsl(r.workbook);
+      if (items.length >= 3) { if (prog) prog.innerHTML = ''; useMsl(items, f.name); toast(`${f.name} is a Material Submittal Log – imported it as the project's Material Submittal Log (not as a specification)`, 8000); continue; }
+    }
     S.specs.push({ name: f.name, pages: r.pages, chars: r.text.length, text: r.text, stds: detectStandards(r.text), sections: detectSections(r.text) });
+    added++;
   }
-  save(); render(); toast(`${files.length} specification file(s) added`);
+  save(); render(); if (added) toast(`${added} specification file(s) added`);
 }
 async function importLog(file) {
   toast('Reading MS Log…', 20000);
@@ -3470,7 +3746,7 @@ async function importLibrary(file) {
 async function openProject(file) {
   const data = JSON.parse(await file.text());
   if (!data || data.v !== 1 || !data.project) throw new Error('This is not an Oxypro MSRA Generator project file');
-  S = dropMepConsultant(data); S.ui = Object.assign({ view: 'register', filter: 'ALL' }, { view: 'register' });
+  S = dropMepConsultant(data); S.ui = Object.assign({ view: 'register', filter: 'ALL' }, { view: 'register' }); setProjFile(null);
   save(true); render(); toast('Project opened: ' + (S.project.name || file.name));
 }
 
@@ -3682,6 +3958,9 @@ document.addEventListener('click', async ev => {
       case 'add-ai': S.ui.addForm = { title: $('#add-title').value.trim(), disc: $('#add-disc').value, stage: $('#add-stage').value }; await aiDraft(); break;
       case 'lib-export': await saveFile(`Oxypro MS Standard Library ${todayISO()}.json`, new Blob([JSON.stringify(allLib(), null, 1)], { type: 'application/json' })); break;
       case 'lib-reset': LIB_OVR = {}; try { localStorage.removeItem(LIB_KEY); } catch (e) { } render(); toast('Local standard changes discarded'); break;
+      case 'msl-remove': S.ui.mslConfirm = true; render(); break;
+      case 'msl-remove-no': S.ui.mslConfirm = false; render(); break;
+      case 'msl-remove-yes': delete S.msl; S.ui.mslConfirm = false; save(); render(); toast('Material Submittal Log removed – typed references are kept'); break;
       case 'new-project': S.ui.confirmReset = true; render(); break;
       case 'new-project-no': S.ui.confirmReset = false; render(); break;
       case 'new-project-yes': startNewProject(); break;
@@ -3693,14 +3972,67 @@ function startNewProject() {
   const fresh = defaultState();
   fresh.project = Object.assign(fresh.project, { name: '', cover1: '', cover2: '', cover3: '', code: 'PRJ', client: '', consultant: '', mainContractor: '', area: '', logos: {}, photo: null, sample: false, emirate: 'dubai' });
   fresh.register = allLib().map(a => ({ key: a.id, libId: a.id, title: a.title, disc: a.disc, stage: a.stage, seq: +a.id.split('-')[1] || 1, related: '', selected: false, docNo: '', rev: '', area: '', raRef: '', specSections: '' }));
-  S = fresh; S.ui.view = 'project'; save(true); render(); window.scrollTo(0, 0); toast('Blank project started – fill in the project details');
+  S = fresh; S.ui.view = 'project'; setProjFile(null); save(true); render(); window.scrollTo(0, 0); toast('Blank project started – fill in the project details');
+}
+function projectFileName() { return slug(`MS Project - ${S.project.code && S.project.code !== 'PRJ' ? S.project.code : (S.project.name || 'project')} - ${todayISO()}`) + '.json'; }
+function projectBlob() {
+  const data = JSON.parse(JSON.stringify(S, (k, v) => (k && k[0] === '_') ? undefined : v)); data.ui = { view: 'register', filter: 'ALL' };
+  return new Blob([JSON.stringify(data)], { type: 'application/json' });
+}
+/* Save as… (user, 21 Oct 2026: "Save As button to save the project with the desired file name and folder location").
+   Edge / Chrome (offline copy and web version): the Windows "Save As" window – file name and folder. After that,
+   "Save project" saves to the same file until a new or another project is opened. Elsewhere (the claude.ai version,
+   Firefox, Safari): a file-name box, then the browser's own download (folder as set in the browser). */
+let PROJ_FILE = null;      // file chosen with Save as… (this session)
+const canPickSave = () => typeof window.showSaveFilePicker === 'function' && window.top === window.self;
+function setProjFile(h) {
+  PROJ_FILE = h || null;
+  const b = $('#btn-save-project'); if (b) b.title = PROJ_FILE ? `Saves to ${PROJ_FILE.name} (the file chosen with Save as…)` : 'Downloads the project file (.json)';
+}
+async function writeProjFile(h, blob) {
+  if (h.queryPermission && (await h.queryPermission({ mode: 'readwrite' })) !== 'granted' && h.requestPermission && (await h.requestPermission({ mode: 'readwrite' })) !== 'granted') throw new Error('permission to write the file was not given');
+  const w = await h.createWritable(); await w.write(blob); await w.close();
 }
 async function saveProject() {
-  const name = slug(`MS Project - ${S.project.code && S.project.code !== 'PRJ' ? S.project.code : (S.project.name || 'project')} - ${todayISO()}`) + '.json';
-  const data = JSON.parse(JSON.stringify(S, (k, v) => (k && k[0] === '_') ? undefined : v)); data.ui = { view: 'register', filter: 'ALL' };
-  return await saveFile(name, new Blob([JSON.stringify(data)], { type: 'application/json' }));
+  if (PROJ_FILE) {
+    try { await writeProjFile(PROJ_FILE, projectBlob()); toast('Saved to ' + PROJ_FILE.name); return true; }
+    catch (err) { console.warn(err); toast('Could not save to ' + PROJ_FILE.name + ' (' + (err.message || err) + ') – downloading a copy instead', 7000); setProjFile(null); }
+  }
+  return await saveFile(projectFileName(), projectBlob());
+}
+async function saveProjectAs() {
+  const suggested = PROJ_FILE ? PROJ_FILE.name : projectFileName();
+  if (canPickSave()) {
+    try {
+      const h = await window.showSaveFilePicker({ suggestedName: suggested, types: [{ description: 'Oxypro MSRA Generator project', accept: { 'application/json': ['.json'] } }] });
+      await writeProjFile(h, projectBlob()); setProjFile(h); toast('Saved to ' + h.name); return true;
+    } catch (err) {
+      if (err && err.name === 'AbortError') { toast('Save cancelled'); return false; }
+      console.warn('Save as window not available', err);
+    }
+  }
+  const dlg = $('#saveas-dlg'); const inp = $('#saveas-name');
+  inp.value = suggested;
+  $('#saveas-note').hidden = !!DL;
+  if (typeof dlg.showModal === 'function') { if (!dlg.open) dlg.showModal(); } else dlg.setAttribute('open', '');
+  inp.focus(); inp.setSelectionRange(0, Math.max(0, inp.value.length - 5));
+  return null;
+}
+function closeSaveAs() { const dlg = $('#saveas-dlg'); if (typeof dlg.close === 'function') dlg.close(); else dlg.removeAttribute('open'); }
+async function saveAsOk() {
+  let name = $('#saveas-name').value.trim().replace(/[\\/:*?"<>|]+/g, '-');
+  if (!name) { $('#saveas-name').focus(); return; }
+  if (!/\.json$/i.test(name)) name += '.json';
+  closeSaveAs();
+  await saveFile(name, projectBlob());
 }
 $('#btn-save-project').addEventListener('click', () => saveProject());
+$('#btn-save-as').addEventListener('click', () => saveProjectAs());
+$('#saveas-cancel').addEventListener('click', closeSaveAs);
+$('#saveas-ok').addEventListener('click', saveAsOk);
+$('#saveas-form').addEventListener('submit', ev => { ev.preventDefault(); saveAsOk(); });
+$('#saveas-dlg').addEventListener('click', e => { if (e.target === e.currentTarget) closeSaveAs(); });
+setProjFile(null);
 // New project (top bar): ask first, offer to save the current project
 function openNewProject() {
   const dlg = $('#np-dlg'); if (!dlg) return;
