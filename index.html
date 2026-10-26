@@ -284,6 +284,10 @@ table.mref select{width:100%;max-width:330px;font-size:13px;padding:4px 6px}
 table.mref input{width:100%;min-width:150px;font-size:13px;padding:4px 6px}
 table.mref .mref-val{font-family:var(--f-mono);font-size:12.5px;min-width:150px;word-break:break-word}
 
+/* Delete a Method Statement (26 Oct 2026) */
+.btn.del-ms{color:var(--accent)}
+.del-note{border-left-color:var(--accent)}
+.del-undo .btn{margin-left:6px}
 
 </style>
 <header class="top">
@@ -3228,6 +3232,7 @@ function vRegister() {
   const opt = (k, v, lab) => `<option value="${v}" ${String(rf[k] || '') === v ? 'selected' : ''}>${lab}</option>`;
   return `<section class="view">
   ${S.project.sample ? `<div class="note info">Sample project loaded: the register below ${SAMPLE_OF ? `comes from the <b>${esc(SAMPLE_OF)}</b> MS Log plus the MEP (General) Method Statements` : 'lists the standard Method Statements'} (76 in all). Import your own MS Log here, or set up the project under <button class="btn small" data-act="goto" data-v="project">Project</button>.</div>` : ''}
+  ${S.ui.undoDel ? `<div class="note info del-undo">Deleted <b>${esc(S.ui.undoDel.title)}</b> (${esc(S.ui.undoDel.docNo)}). <button class="btn small" data-act="del-undo">Undo</button> <button class="btn small ghost" data-act="del-undo-close" aria-label="Dismiss">Dismiss</button></div>` : ''}
   ${imp ? vImport(imp) : ''}
   ${S.ui.addForm ? vAddForm() : ''}
   ${S.ui.tr ? vTransmittal() : ''}
@@ -3453,9 +3458,11 @@ function vEditor() {
   const sub = S.ui.sub || 'general';
   return `<section class="view"><div class="card">
   <div class="ed-head">
-    <div class="row"><button class="btn small ghost" data-act="goto" data-v="register">← Register</button><span class="grow"></span>
+    <div class="row"><button class="btn small ghost" data-act="goto" data-v="register">← Register</button>${S.ui.delConfirm === row.key ? '' : `<button class="btn small ghost del-ms" data-act="del-ms" data-k="${esc(row.key)}" title="Delete this Method Statement from the register">Delete</button>`}<span class="grow"></span>
       ${S.edits[row.key] ? '<button class="btn small ghost" data-act="reset-entry">Reset to Oxypro standard</button><button class="btn small" data-act="promote">Save as Oxypro standard</button>' : ''}
       <button class="btn small" data-act="gen-xlsx" data-k="${esc(row.key)}">Excel ITP</button><button class="btn small" data-act="gen-ra" data-k="${esc(row.key)}">Word – Risk Assessment</button><button class="btn small" data-act="gen-msra" data-k="${esc(row.key)}" title="Method Statement (with its ITP) + Risk Assessment in one file – Word, or PDF for review" aria-haspopup="dialog">MSRA (Word / PDF)</button><button class="btn primary small" data-act="gen-word" data-k="${esc(row.key)}">Word – MS + ITP</button></div>
+    ${S.ui.delConfirm === row.key ? `<div class="note del-note" role="alert"><b>Delete this Method Statement?</b> It is removed from the register together with its project edits and Risk Assessment changes. Other Method Statements keep their numbers.
+      <div class="row" style="margin-top:8px"><button class="btn small primary" data-act="del-ms-yes" data-k="${esc(row.key)}">Delete ${esc(docNo(row))}</button><button class="btn small" data-act="del-ms-no">Keep it</button></div></div>` : ''}
     <h2>${esc(e.title)}</h2>
     <div class="ed-meta"><span class="mono">${esc(docNo(row))}</span><span>Rev ${esc(revOf(row))}</span><span>${esc(fmtDate(dateOf(row)))}</span><span class="stage ${e.stage === 'TC' ? 'TC' : ''}">${e.stage === 'TC' ? 'Testing & commissioning' : 'Installation'}</span><span>${esc(DISC[e.disc] || '')}</span>
       <span>${holdRows(e).length} hold points</span><span>${S.edits[row.key] ? 'Edited for this project' : 'Oxypro standard'}</span></div>
@@ -3961,12 +3968,40 @@ document.addEventListener('click', async ev => {
       case 'msl-remove': S.ui.mslConfirm = true; render(); break;
       case 'msl-remove-no': S.ui.mslConfirm = false; render(); break;
       case 'msl-remove-yes': delete S.msl; S.ui.mslConfirm = false; save(); render(); toast('Material Submittal Log removed – typed references are kept'); break;
+      case 'del-ms': if (row) { S.ui.delConfirm = row.key; render(); } break;
+      case 'del-ms-no': S.ui.delConfirm = null; render(); break;
+      case 'del-ms-yes': if (row) deleteMs(row); break;
+      case 'del-undo': undoDeleteMs(); break;
+      case 'del-undo-close': S.ui.undoDel = null; save(); render(); break;
       case 'new-project': S.ui.confirmReset = true; render(); break;
       case 'new-project-no': S.ui.confirmReset = false; render(); break;
       case 'new-project-yes': startNewProject(); break;
     }
   } catch (err) { console.error(err); toast('Something went wrong: ' + (err.message || err), 7000); render(); }
 });
+/* Delete a Method Statement (user, 26 Oct 2026: "just add the delete option"). Removes the register row, its project
+   edits (incl. Risk Assessment changes) and a Method Statement added for this project only; other rows keep their
+   numbers; transmittal records keep their own copy. One step of Undo from the register. */
+function deleteMs(row) {
+  const idx = S.register.indexOf(row); if (idx < 0) return;
+  const lid = row.libId;
+  const custom = lid && S.custom[lid] && !S.register.some(r => r !== row && r.libId === lid) ? S.custom[lid] : null;
+  S.ui.undoDel = { row: clone(row), idx, edit: S.edits[row.key] ? clone(S.edits[row.key]) : null, custom: custom ? clone(custom) : null, title: getEntry(row) ? getEntry(row).title : row.title, docNo: docNo(row) };
+  S.register.splice(idx, 1);
+  delete S.edits[row.key];
+  if (custom) delete S.custom[lid];
+  S.ui.delConfirm = null;
+  if (S.ui.editor === row.key) { S.ui.editor = null; S.ui.view = 'register'; }
+  save(true); render(); window.scrollTo(0, 0);
+  toast(`Deleted ${S.ui.undoDel.docNo} – Undo is above the register`, 6000);
+}
+function undoDeleteMs() {
+  const u = S.ui.undoDel; if (!u) return;
+  if (!rowByKey(u.row.key)) S.register.splice(Math.min(u.idx, S.register.length), 0, u.row);
+  if (u.edit) S.edits[u.row.key] = u.edit;
+  if (u.custom && u.row.libId && !S.custom[u.row.libId]) S.custom[u.row.libId] = u.custom;
+  S.ui.undoDel = null; save(true); render(); toast('Method Statement restored: ' + u.docNo);
+}
 /* blank project – from the top bar "New project" (17 Oct 2026) and "New blank project" in Library & settings */
 function startNewProject() {
   const fresh = defaultState();
