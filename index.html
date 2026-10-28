@@ -288,6 +288,15 @@ table.mref .mref-val{font-family:var(--f-mono);font-size:12.5px;min-width:150px;
 .btn.del-ms{color:var(--accent)}
 .del-note{border-left-color:var(--accent)}
 .del-undo .btn{margin-left:6px}
+/* Upload MSRA for reference (28 Oct 2026) */
+.ref-note{margin:10px 0}
+.ref-note .ref-hd{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ref-note .ref-hd .mono{overflow-wrap:anywhere}
+.ref-list{margin:6px 0 6px 20px;padding:0}
+.ref-list li{margin:2px 0}
+.ref-note .muted{font-size:13px;margin-top:3px}
+.ref-help{margin:8px 0 0;font-size:13px}
+.ref-from{margin-bottom:12px}
 
 </style>
 <header class="top">
@@ -3115,6 +3124,613 @@ function xlSheet(wb, ws) {
   return div;
 }
 
+/* ============================================================ UPLOAD MSRA FOR REFERENCE
+   User, 28 Oct 2026: "while adding method statement, please add option to "upload MSRA for reference" to replicate the
+   same and apply to the new MSRA".
+   Reads a Word MSRA (or a Method Statement or a Risk Assessment on its own) and copies the activity content into the new
+   Method Statement: scope, tools, materials, storage, material checks, coordination, procedure with hold points,
+   acceptance criteria, parameters, ITP, checklist, hazards, permits, records, references and the Risk Assessment.
+   Project details, document numbers and material submittal references in the file are not copied.
+   Files made by this app (and by hand in the Oxypro format) are read section by section; other layouts are read from
+   their headings and table headers. Whatever the file does not have is taken from the closest Oxypro standard. */
+
+const RF_W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+const rfN = s => String(s ?? '').replace(/[‘’]/g, '\'').replace(/[“”]/g, '"').replace(/[–—]/g, '–').replace(/ /g, ' ').replace(/[ \t]+/g, ' ');
+const rfKey = s => rfN(s).toLowerCase().replace(/–/g, '-').trim();
+const rfRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/* ---------- the app's fixed text (never copied: the new Method Statement prints its own) */
+let RF_FIXED = null;
+function rfFixed() {
+  if (RF_FIXED) return RF_FIXED;
+  const set = new Set(), rx = [];
+  const dec = s => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, '\'').replace(/&amp;/g, '&');
+  Object.values(STAMPS.blocks || {}).forEach(arr => [].concat(arr).join('').replace(/<w:p[ >][\s\S]*?<\/w:p>/g, p => {
+    const t = dec((p.match(/<w:t(?: [^>]*)?>[^<]*<\/w:t>/g) || []).map(x => x.replace(/<[^>]+>/g, '')).join('')).trim();
+    if (!t) return '';
+    if (/\{\{\w+\}\}/.test(t)) rx.push(new RegExp('^' + t.split(/\{\{\w+\}\}/).map(x => rfRe(rfN(x).replace(/–/g, '-'))).join('(.+?)') + '$', 'i'));
+    else set.add(rfKey(t));
+    return '';
+  }));
+  // printed by the generator itself (Records, Authority HSE Requirements, Attachments)
+  ['Inspection and Test Plan (ITP) and signed inspection checklists',
+    'Outdoor works shall observe the MoHRE midday break during the summer period and the Main Contractor\'s heat stress management plan.',
+    'Attachment 1 (Inspection Checklist), Attachment 2 (Inspection and Test Plan) and Attachment 3 (Risk Assessment) are enclosed with this Method Statement.',
+    'Attachment 1 (Inspection Checklist) and Attachment 2 (Inspection and Test Plan) are enclosed with this Method Statement. The Risk Assessment is submitted with this Method Statement.',
+    'This Method Statement is aligned with the following sections of the project specification:'].forEach(t => set.add(rfKey(t)));
+  return RF_FIXED = { set, rx };
+}
+function rfIsFixed(t) {
+  const k = rfKey(t); const F = rfFixed();
+  if (F.set.has(k)) return true;
+  if (/^works shall comply with .*hse plan\.$/.test(k)) return true;
+  const n = rfN(t).replace(/–/g, '-').trim();
+  return F.rx.some(r => r.test(n));
+}
+const rfPlaceholder = t => /\[[^\]]{3,}\]/.test(String(t || ''));   // "[Scope item 1 – e.g. …]" in a blank format
+const rfClean = t => rfN(t).replace(/^\s*(?:[•●▪■◦○‣∙·\-–*]|\(?(?:\d{1,2}|[a-hA-H]|[ivx]{1,4})[.)])\s+/, '').trim();
+
+/* ---------- Word body -> blocks */
+const rfVal = el => el ? (el.getAttributeNS(RF_W, 'val') || el.getAttribute('w:val') || '') : '';
+const rfChild = (el, n) => { if (!el) return null; for (const c of el.children) if (c.localName === n) return c; return null; };
+const RF_SYM = { F0FE: '☒', F078: '☒', F0FD: '☒', F0A8: '☐', F06F: '☐', F0A3: '☐', F071: '☐', F0B7: '•', F0A7: '▪' };
+function rfPara(p, styles) {
+  const ppr = rfChild(p, 'pPr');
+  const sid = rfVal(rfChild(ppr, 'pStyle'));
+  const np = rfChild(ppr, 'numPr');
+  let t = '', allB = true, any = false;
+  const run = r => {
+    let rt = '';
+    for (const x of r.children) {
+      const n = x.localName;
+      if (n === 't') rt += x.textContent;
+      else if (n === 'tab' || n === 'br' || n === 'cr') rt += ' ';
+      else if (n === 'noBreakHyphen') rt += '-';
+      else if (n === 'sym') rt += RF_SYM[(x.getAttributeNS(RF_W, 'char') || x.getAttribute('w:char') || '').toUpperCase()] || '';
+    }
+    if (rt.trim()) { any = true; const b = rfChild(rfChild(r, 'rPr'), 'b'); if (!b || /^(0|false|off)$/i.test(rfVal(b))) allB = false; }
+    t += rt;
+  };
+  const walk = el => {
+    for (const c of el.children) {
+      const n = c.localName;
+      if (n === 'r') run(c);
+      else if (['hyperlink', 'ins', 'smartTag', 'sdt', 'sdtContent', 'fldSimple', 'customXml', 'moveTo', 'bdo', 'dir'].includes(n)) walk(c);
+    }
+  };
+  walk(p);
+  const st = (styles[sid] || sid || '').toLowerCase();
+  return { k: 'p', t: rfN(t).trim(), num: np ? rfVal(rfChild(np, 'numId')) : null, lvl: np ? +(rfVal(rfChild(np, 'ilvl')) || 0) : null,
+    st, bold: any && allB, keep: !!rfChild(ppr, 'keepNext'), pb: !!rfChild(ppr, 'pageBreakBefore') };
+}
+function rfWalk(el, out, styles, flat) {   // flat: nested tables become paragraphs of the cell
+  for (const c of el.children) {
+    const n = c.localName;
+    if (n === 'p') out.push(rfPara(c, styles));
+    else if (n === 'tbl') { if (flat) { for (const tr of c.children) if (tr.localName === 'tr') for (const tc of tr.children) if (tc.localName === 'tc') rfWalk(tc, out, styles, true); } else out.push(rfTable(c, styles)); }
+    else if (['sdt', 'sdtContent', 'customXml', 'ins', 'moveTo'].includes(n)) rfWalk(c, out, styles, flat);
+  }
+}
+function rfTable(tbl, styles) {
+  const rows = [];
+  const trs = []; const grab = el => { for (const c of el.children) { if (c.localName === 'tr') trs.push(c); else if (['sdt', 'sdtContent', 'customXml'].includes(c.localName)) grab(c); } };
+  grab(tbl);
+  for (const tr of trs) {
+    const cells = [];
+    const tcs = []; const g2 = el => { for (const c of el.children) { if (c.localName === 'tc') tcs.push(c); else if (['sdt', 'sdtContent', 'customXml'].includes(c.localName)) g2(c); } };
+    g2(tr);
+    for (const tc of tcs) {
+      const pr = rfChild(tc, 'tcPr');
+      const vm = rfChild(pr, 'vMerge');
+      const ps = []; rfWalk(tc, ps, styles, true);
+      const paras = ps.filter(b => b.t);
+      cells.push({ t: paras.map(b => b.t).join('\n'), ps: paras, span: Math.max(1, +(rfVal(rfChild(pr, 'gridSpan')) || 1)), cont: !!vm && (rfVal(vm) || 'continue') === 'continue' });
+    }
+    if (cells.length) rows.push(cells);
+  }
+  return { k: 't', rows };
+}
+const rfGrid = row => row.flatMap(c => Array(c.span).fill(c));
+const rfHead = row => rfGrid(row).map(c => rfKey(c.t));
+
+async function rfReadDocx(buf) {
+  let zip;
+  try { zip = await JSZip.loadAsync(buf); } catch (e) { throw new Error('This is not a Word .docx file – open it in Word and save it as .docx, then upload it again'); }
+  const f = zip.file('word/document.xml');
+  if (!f) throw new Error('This is not a Word .docx file – open it in Word and save it as .docx, then upload it again');
+  const styles = {};
+  const sf = zip.file('word/styles.xml');
+  if (sf) {
+    const sd = new DOMParser().parseFromString(await sf.async('string'), 'application/xml');
+    for (const s of sd.getElementsByTagNameNS(RF_W, 'style')) { const id = s.getAttributeNS(RF_W, 'styleId') || s.getAttribute('w:styleId'); const nm = rfVal(rfChild(s, 'name')); if (id) styles[id] = nm || id; }
+  }
+  const doc = new DOMParser().parseFromString(await f.async('string'), 'application/xml');
+  const body = doc.getElementsByTagNameNS(RF_W, 'body')[0];
+  if (!body) throw new Error('The Word file has no readable content');
+  const out = []; rfWalk(body, out, styles, false);
+  return out;
+}
+
+/* ---------- headings */
+const rfStrip = t => rfN(t).replace(/^\s*(?:section\s+)?\d{1,2}(?:\.\d{1,2})*[.)]?\s+/i, '').replace(/\s+\d{1,3}$/, '').trim();
+const RF_H1 = [
+  ['attx', /^(attachment|appendix|annex(ure)?)\s*[-–]?\s*[a-z0-9]{1,3}\b/],
+  ['defs', /^(definitions?|abbreviations?|terms and)\b/],
+  ['matchk', /inspections? of materials?|materials? (inspection|receiving|receipt)|receiving inspection/],
+  ['proc', /procedure|sequence of (work|activit|installation)|methodology|method of (work|installation|execution)|work method|execution of (the )?works?|installation (method|process|sequence)/],
+  ['itr', /inspection(s)? (and|&) test|testing (requirements|and inspection)|quality (control|assurance)|acceptance criteria/],
+  ['storage', /deliver|storage|handling/],
+  ['coord', /coordination|interface/],
+  ['hse', /health|safety|risk|hazard|\bhse\b|environment|protective|\bppe\b/],
+  ['records', /^records?\b|^documentation|quality records/],
+  ['att', /^(attachments?|appendices|annexures?)$/],
+  ['resp', /responsibilit|organi[sz]ation|manpower|personnel|roles/],
+  ['refs', /applicable doc|references?|standards|codes/],
+  ['tools', /tools|equipment|plant\b|machinery/],
+  ['materials', /^materials?\b|schedule of materials|material (list|schedule|specification)/],
+  ['project', /^project (details|information|description|particulars)/],
+  ['scope', /scope|objective|purpose|introduction|general description/]
+];
+function rfH1Key(t) {
+  const s = rfStrip(t).toLowerCase();
+  if (!s || s.length > 80 || !/[a-z]/.test(s)) return null;
+  for (const [k, r] of RF_H1) if (r.test(s)) return k;
+  return null;
+}
+function rfIsH1(b) {
+  if (b.k !== 'p' || !b.t || b.t.length > 90) return false;
+  if (/^toc|^contents|^table of/.test(b.st)) return false;
+  if (/^(heading ?1|title)$/.test(b.st)) return true;
+  const up = b.t === b.t.toUpperCase() && /[A-Z]{3}/.test(b.t);
+  return (b.bold && (up || (b.num != null && b.lvl === 0) || b.pb)) || (up && b.num != null && b.lvl === 0);
+}
+function rfIsH2(b) {
+  if (b.k !== 'p' || !b.t || b.t.length > 100) return false;
+  if (/^heading ?[2-4]$/.test(b.st)) return true;
+  if (/[.;,]$/.test(b.t) || (/:$/.test(b.t) && !b.bold)) return false;
+  if (b.bold && b.t.length <= 90) return true;
+  return /^\d{1,2}\.\d{1,2}\.?\s+\S/.test(b.t) && b.t.length <= 80;
+}
+function rfSections(blocks) {   // { key: [blocks…] } – headings repeated in a table of contents are skipped
+  const marks = [];
+  blocks.forEach((b, i) => { if (rfIsH1(b)) { const k = rfH1Key(b.t); if (k) marks.push({ i, k, t: b.t }); } });
+  const valid = marks.filter((m, j) => {
+    for (let x = m.i + 1; x < blocks.length; x++) {
+      const b = blocks[x];
+      if (marks[j + 1] && x === marks[j + 1].i) return m.k === 'attx';
+      if (b.k === 't' || (b.k === 'p' && b.t)) return true;
+    }
+    return false;
+  });
+  const out = {}; const heads = {};
+  valid.forEach((m, j) => {
+    const end = j + 1 < valid.length ? valid[j + 1].i : blocks.length;
+    (out[m.k] = out[m.k] || []).push(...blocks.slice(m.i + 1, end));
+    heads[m.k] = heads[m.k] || m.t;
+  });
+  return { sec: out, heads };
+}
+function rfGroups(blocks) {
+  const gs = [{ head: '', seq: [] }];
+  (blocks || []).forEach(b => {
+    if (b.k === 'p') { if (!b.t) return; if (rfIsH2(b)) gs.push({ head: rfStrip(b.t).replace(/:$/, ''), seq: [] }); else gs[gs.length - 1].seq.push(b); }
+    else gs[gs.length - 1].seq.push(b);
+  });
+  return gs;
+}
+const rfItems = seq => seq.filter(b => b.k === 'p' && b.t && !rfIsFixed(b.t) && !rfPlaceholder(b.t)).map(b => rfClean(b.t)).filter(Boolean);
+const rfTables = blocks => (blocks || []).filter(b => b.k === 't');
+function rfListOf(blocks) { return rfGroups(blocks).flatMap(g => rfItems(g.seq)); }
+function rfDedupe(a) { const s = new Set(); return a.filter(x => { const k = rfKey(x); if (s.has(k)) return false; s.add(k); return true; }); }
+
+/* ---------- tables */
+function rfHeaderRows(tb, test) {   // the header row (a title row above it is skipped) + a second header row -> label per grid column
+  let hi = 0;
+  if (test) { hi = tb.rows.slice(0, 6).findIndex(r => test(rfHead(r))); if (hi < 0) return null; }
+  const h0 = rfHead(tb.rows[hi] || []);
+  const h1 = tb.rows[hi + 1] ? rfHead(tb.rows[hi + 1]) : [];
+  const sub = h1.length && h1.some(x => /^\(?(l|s)\)?$|^(score|rating|likelihood|severity|probability|consequence|contractor|consultant|client|oxy|mc|cons|auth)$/.test(x)) && !h1.some(x => x.length > 40);
+  return { labels: h0.map((x, i) => (x + ' ' + (sub ? (h1[i] || '') : '')).trim()), n: hi + (sub ? 2 : 1) };
+}
+const RF_IS_RA = h => h.some(x => /hazard/.test(x)) && h.some(x => /control|measure|mitigation/.test(x));
+const RF_IS_ITP = h => h.some(x => /acceptance|criteria/.test(x)) && h.some(x => /activity|inspection|item|description/.test(x)) && h.some(x => /method|frequency|record|responsib|verif/.test(x)) && !h.some(x => /hazard/.test(x));
+const RF_IS_CHECK = h => h.includes('yes') && h.some(x => /^no\.?$/.test(x)) && h.some(x => /item|description|inspection|check|activity|requirement/.test(x));
+function rfCols(labels, spec) {   // spec: [[name, regex, notRegex?]] in priority order, each column used once
+  const used = new Set(), cols = {};
+  spec.forEach(([k, re, not]) => { const i = labels.findIndex((l, j) => !used.has(j) && re.test(l) && !(not && not.test(l))); if (i >= 0) { cols[k] = i; used.add(i); } });
+  return cols;
+}
+const rfCell = (g, i) => (i == null || !g[i]) ? '' : rfN(g[i].t).trim();
+function rfCode(v) {
+  const s = rfN(v).trim().toUpperCase();
+  if (!s || /^[–\-—N\/A.]+$/.test(s)) return '';
+  if (/^[HWIRS](\s*[\/,&]\s*[HWIRS])*$/.test(s)) return s.replace(/\s+/g, '');
+  const m = s.match(/^(HOLD|WITNESS|INSPECT|REVIEW|SURVEIL)/); return m ? { HOLD: 'H', WITNESS: 'W', INSPECT: 'I', REVIEW: 'R', SURVEIL: 'S' }[m[1]] : '';
+}
+const RF_STAGE = { INS: ['Preliminary', 'Pre-Installation', 'Installation', 'Inspection', 'Completion'], TC: ['Preliminary', 'Pre-Testing', 'Testing', 'Commissioning', 'Completion'] };
+
+function rfItp(tb, tc) {
+  const hr = rfHeaderRows(tb, RF_IS_ITP); if (!hr) return [];
+  const { labels, n } = hr;
+  const c = rfCols(labels, [
+    ['no', /^(no\.?|s\.? ?no\.?|sr\.? ?no\.?|item no\.?|ref\.?|#)$/], ['stage', /stage|phase/],
+    ['item', /activity|inspection item|inspection \/ test|description|item/], ['resp', /responsib|performed by|action by|^by$/],
+    ['method', /method|type of (inspection|test)/], ['criteria', /acceptance|criteria/], ['freq', /frequency|extent|sampling/],
+    ['record', /record|document|format|report|verification/],
+    ['oxy', /^oxy|oxypro|sub[- ]?contractor|mep contractor|^contractor$|^sc$/], ['mc', /^mc$|main contractor/],
+    ['cons', /^cons|consultant|engineer|^pmc|client|employer/], ['auth', /^auth|third|tpi|authority/]
+  ]);
+  if (c.item == null) return [];
+  const rows = []; let stage = '', si = 0, lastStage = null, j = 0;
+  tb.rows.slice(n).forEach(r => {
+    const g = rfGrid(r);
+    const filled = r.filter(x => x.t.trim());
+    if (filled.length === 1 && (r.length <= 2 || filled[0].span >= 3)) { stage = rfClean(filled[0].t); return; }
+    const item = rfCell(g, c.item); if (!item || rfPlaceholder(item) || rfKey(item) === labels[c.item]) return;
+    const st = rfCell(g, c.stage); if (st) stage = st;
+    let no = rfCell(g, c.no).replace(/\.$/, '');
+    if (stage !== lastStage) { si++; j = 0; lastStage = stage; }
+    j++;
+    if (!/^\d+(\.\d+)+$/.test(no)) no = `${Math.min(si, 9)}.${j}`;
+    const pre = +no.split('.')[0];
+    rows.push({ stage: stage || RF_STAGE[tc ? 'TC' : 'INS'][Math.min(4, Math.max(0, pre - 1))], no, item: rfClean(item), resp: rfCell(g, c.resp), method: rfCell(g, c.method), criteria: rfCell(g, c.criteria),
+      freq: rfCell(g, c.freq), record: rfCell(g, c.record), oxy: rfCode(rfCell(g, c.oxy)), mc: rfCode(rfCell(g, c.mc)), cons: rfCode(rfCell(g, c.cons)), auth: rfCode(rfCell(g, c.auth)) });
+  });
+  return rows;
+}
+function rfControls(cell) {
+  if (!cell) return [];
+  let ps = cell.ps.map(p => p.t).filter(Boolean);
+  if (ps.length === 1 && /(^|\s)[a-h]\)\s/.test(ps[0])) ps = ps[0].split(/\s(?=[b-h]\)\s)/);
+  return ps.map(rfClean).map(s => s.replace(/^[a-h]\)\s*/, '')).filter(Boolean).map(s => /[.!?)]$/.test(s) ? s : s + '.');
+}
+function rfRaTable(tb) {
+  const hr = rfHeaderRows(tb, RF_IS_RA); if (!hr) return [];
+  const { labels, n } = hr;
+  const c = rfCols(labels, [
+    ['no', /^(no\.?|s\.? ?no\.?|sr\.? ?no\.?|ref\.?|#)$/], ['resp', /responsib|action by|by whom|owner/],
+    ['persons', /person|who|affected|at risk|exposed/], ['hazards', /hazard/],
+    ['step', /activity|task|step|operation|job|description/],
+    ['L', /(^|[\s(])l\)?$|likelihood|probability/], ['S', /(^|[\s(])s\)?$|severity|consequence/],
+    ['controls', /control|measure|mitigation|precaution/, /(^|[\s(])(l|s)\)?$|score|rating|likelihood|severity|probability|consequence/],
+    ['L2', /(^|[\s(])l\)?$|likelihood|probability/], ['S2', /(^|[\s(])s\)?$|severity|consequence/]
+  ]);
+  if (c.hazards == null || c.controls == null) return [];
+  const num = (v, d) => { const x = parseInt(rfN(v), 10); return x >= 1 && x <= 5 ? x : d; };
+  const steps = [];
+  tb.rows.slice(n).forEach(r => {
+    const g = rfGrid(r);
+    const step = rfClean(rfCell(g, c.step)), hz = rfCell(g, c.hazards);
+    if ((!step && !hz) || rfPlaceholder(step + hz)) return;
+    if (rfKey(hz) === labels[c.hazards]) return;
+    const L = num(rfCell(g, c.L), 3), S = num(rfCell(g, c.S), 3);
+    steps.push({ step: step || hz.slice(0, 70), hazards: hz.replace(/\n/g, '; '), persons: rfCell(g, c.persons).replace(/\n/g, ', ') || 'Labor, Installers, Supervisor', L, S,
+      controls: rfControls(g[c.controls]), L2: num(rfCell(g, c.L2), Math.max(1, L - 2)), S2: num(rfCell(g, c.S2), S),
+      resp: rfCell(g, c.resp).replace(/\n/g, ' / ') || 'Site Engineer / Site Supervisor / HSE Officer' });
+  });
+  return steps;
+}
+const RF_PPE_KW = [['helmet', /helmet|hard hat/], ['shoes', /shoe|boot/], ['hivis', /vis|vest|reflective/], ['glasses', /glass|goggle|spectacle/], ['gloves_cut', /cut|glove/],
+  ['harness', /harness/], ['hearing', /hearing|ear (plug|muff|defender)/], ['dust_mask', /dust|respirat|mask/], ['face_shield', /face shield|visor/], ['arc', /arc|insulat/], ['chemical', /chemical/]];
+function rfTicks(text) {   // "☒ Safety Helmet ☐ ..." -> [{on, label}]
+  const out = []; const re = /([☒☑✓✔■☐□]|\[\s*[xX✓]?\s*\])\s*([^☒☑✓✔■☐□\[]+)/g; let m;
+  while ((m = re.exec(text))) out.push({ on: /[☒☑✓✔■]|\[\s*[xX✓]\s*\]/.test(m[1]), label: rfN(m[2]).trim() });
+  return out;
+}
+function rfPpe(tables) {
+  let mode = null; const ppe = new Set(); let other = '', found = false; const permits = []; let pOther = '';
+  tables.forEach(tb => tb.rows.forEach(r => {
+    const txt = r.map(x => x.t).join(' ');
+    if (/personal protective equipment|\bppe\b/i.test(txt) && !/[☒☑☐□]/.test(txt)) { mode = 'ppe'; return; }
+    if (/^permits?\b|permits? \/ certificates/i.test(rfN(txt).trim())) { mode = 'pm'; return; }
+    if (!mode || !/[☒☑☐□]/.test(txt)) { if (mode && !/[☒☑☐□]/.test(txt)) mode = null; return; }
+    r.forEach(cell => rfTicks(cell.t).forEach(({ on, label }) => {
+      found = true; if (!on) return;
+      const oth = label.match(/^other\s*:?\s*(.*)$/i);
+      if (mode === 'ppe') {
+        if (oth) { other = oth[1].trim(); return; }
+        const hit = RA_PPE.find(([, l]) => rfKey(l).slice(0, 14) === rfKey(label).slice(0, 14)) || RF_PPE_KW.map(([k, re]) => RA_PPE.find(([kk]) => kk === k && re.test(label.toLowerCase()))).find(Boolean);
+        if (hit) ppe.add(hit[0]);
+      } else {
+        if (oth) { pOther = oth[1].trim(); return; }
+        permits.push(label.replace(/\s*\(PTW\)$/, ''));
+      }
+    }));
+  }));
+  if (pOther) pOther.split(/\s*[;,]\s*/).filter(Boolean).forEach(x => permits.push(x));
+  return { found, ppe: RA_PPE.map(([k]) => k).filter(k => ppe.has(k)), other, permits };
+}
+function rfHoldBox(tb) {
+  if (tb.rows.length > 3) return null;
+  const txt = tb.rows.map(r => r.map(c => c.t).join('\n')).join('\n');
+  if (!/HOLD\s*POINT/i.test(txt)) return null;
+  const m = txt.match(/ITP\s*(?:No\.?\s*)?(\d+(?:\.\d+)+)/i); if (!m) return null;
+  const last = tb.rows[0][tb.rows[0].length - 1];
+  const ps = (last.ps || []).map(p => p.t).filter(t => !/HOLD\s*POINT|^ITP\s*\d/i.test(t));
+  const ver = ps.find(t => /^Verification:/i.test(t)) || '';
+  const vm = ver.match(/^Verification:\s*([\s\S]*?)\.\s*Acceptance:\s*([\s\S]*?)\.\s*Record:\s*([\s\S]*?)\.?$/i) || [];
+  const pc = ps.find(t => /Oxypro\s*:/i.test(t)) || '';
+  const code = k => rfCode((pc.match(new RegExp(rfRe(k) + '\\s*:\\s*([HWIRS–\\-])', 'i')) || [])[1] || '');
+  return { no: m[1], item: ps.find(t => !/^(Verification|Oxypro|No work shall)/i.test(t)) || '', method: vm[1] || '', criteria: vm[2] || '', record: vm[3] || '',
+    oxy: code('Oxypro'), mc: code('Main Contractor'), cons: code('Consultant'), auth: code('Authority / Third Party') };
+}
+
+const RF_ACR = new Set('MEP HVAC ELV LPG FCU FCUS AHU AHUS FAHU FAHUS VRF VRV BMS CCTV UPS MDB SMDB DB DBS GI MS PPR HDPE UPVC PVC CPVC CHW DX IST TC FF HV LV MV ATS VFD BWIC LED AV MATV IPTV PA SCADA RMU DEWA SEWA FEWA ADDC TAQA DCD EV PV GRP GRE ERW HDG BS EN ISO'.split(' '));
+function rfTitleCase(t) {   // "INSTALLATION OF GREASE INTERCEPTOR" -> "Installation of Grease Interceptor"
+  if (t !== t.toUpperCase() || !/[A-Z]{4}/.test(t)) return t;
+  const small = new Set(['of', 'and', 'for', 'the', 'in', 'on', 'with', 'to', 'a', 'an', 'at', 'by', 'or']);
+  return t.toLowerCase().split(/(\s+|\/|-|&|\(|\))/).map((w, i) => {
+    if (!/[a-z]/.test(w)) return w;
+    if (w === 'upvc') return 'uPVC';
+    if (RF_ACR.has(w.toUpperCase())) return w.toUpperCase();
+    return (i && small.has(w)) ? w : w[0].toUpperCase() + w.slice(1);
+  }).join('');
+}
+
+/* ---------- the whole reader: Word file -> { ref: parts found, title, tc } */
+async function parseRefMsra(buf) {
+  const blocks = await rfReadDocx(buf);
+  const { sec, heads } = rfSections(blocks);
+  const allTables = blocks.filter(b => b.k === 't');
+  const R = { present: Object.keys(sec) };
+  // title: Activity row of the checklist / ITP / RA header tables, or "Method Statement for …"
+  for (const tb of allTables) {
+    if (rfHeaderRows(tb, RF_IS_ITP) || rfHeaderRows(tb, RF_IS_RA) || rfHeaderRows(tb, RF_IS_CHECK)) continue;   // a column heading "Activity" is not the title
+    for (const r of tb.rows) {
+      const g = rfGrid(r); const i = g.findIndex(c => /^(activity|activity \/ scope of work|activity \/ description|title of activity|activity description)$/.test(rfKey(c.t)));
+      if (i >= 0) { const v = g.slice(i + 1).find(c => c !== g[i] && c.t.trim()); if (v && !rfPlaceholder(v.t)) { R.title = rfN(v.t).trim(); break; } }
+    }
+    if (R.title) break;
+  }
+  if (!R.title) { const p = blocks.slice(0, 80).find(b => b.k === 'p' && /method statement\s*(for|of|[:–-])\s*\S/i.test(b.t)); if (p) R.title = rfN(p.t.replace(/^.*?method statement\s*(for|of|[:–-])\s*/i, '')).trim().replace(/^(the)\s+/i, ''); }
+  if (R.title) R.title = rfTitleCase(R.title.replace(/\s+/g, ' ').slice(0, 160));
+  R.tc = /testing|commissioning/i.test(heads.proc || '');
+  // 1 scope (+ the activity wording of the first sentence)
+  if (sec.scope) {
+    const gs = rfGroups(sec.scope);
+    const sg = gs.find(g => /scope/i.test(g.head));
+    R.scope = rfItems(sg ? sg.seq : gs.flatMap(g => g.seq)).filter(t => !/^location \/ area of works:/i.test(t));
+    const first = sec.scope.find(b => b.k === 'p' && /for the .+ in accordance with:?$/i.test(b.t));
+    if (first) { const a = rfN(first.t).match(/procedures for the (.+?) in accordance with:?$/i); if (a && !/^\[/.test(a[1])) R.act = a[1].trim(); }
+  }
+  // 3 tools
+  if (sec.tools) { R.tools = rfListOf(sec.tools); if (!R.tools.length) rfTables(sec.tools).forEach(tb => tb.rows.slice(1).forEach(r => { const t = rfClean(r[Math.min(1, r.length - 1)].t); if (t) (R.tools = R.tools || []).push(t); })); }
+  // 5 materials and references
+  const refBlocks = (sec.refs || []).concat(sec.materials || []);
+  const uae = [], refs = [];
+  rfTables(refBlocks).forEach(tb => {
+    const h = rfHead(tb.rows[0] || []);
+    if (h.some(x => /issued|authority|publisher/.test(x))) {
+      R.present.push('refsTable');
+      const ci = h.findIndex(x => /reference|standard|code|document|title/.test(x)), ai = h.findIndex(x => /issued|authority|publisher/.test(x));
+      tb.rows.slice(1).forEach(r => {
+        const g = rfGrid(r); const name = rfCell(g, ci < 0 ? 1 : ci), auth = rfCell(g, ai);
+        if (!name || rfPlaceholder(name) || /as referenced in the project specification$/i.test(name)) return;
+        if (/^international standard$|^manufacturer$/i.test(auth)) { refs.push(name); return; }
+        const n = NORMS.find(x => rfKey(x.name) === rfKey(name)) || NORMS.find(x => rfKey(name).startsWith(rfKey(x.name).slice(0, 28)) && rfKey(x.authority) === rfKey(auth));
+        if (n) uae.push(n.key); else refs.push(auth && !/^international/i.test(auth) ? `${name} – ${auth}` : name);
+      });
+    } else if (h.some(x => /material|item|description/.test(x))) {
+      const mi = h.findIndex(x => /material|item|description/.test(x));
+      R.materials = (R.materials || []).concat(tb.rows.slice(1).map(r => rfClean(rfCell(rfGrid(r), mi))).filter(t => t && !rfPlaceholder(t)));
+    }
+  });
+  if (sec.materials && !(R.materials || []).length) R.materials = rfListOf(sec.materials);
+  if (sec.refs) rfGroups(sec.refs).filter(g => !/project specification|schedule of materials/i.test(g.head)).forEach(g => rfItems(g.seq).forEach(t => { if (/\b(BS|EN|ISO|IEC|ASTM|ASME|NFPA|ACI|SMACNA|ASHRAE|CIBSE|UL|FM|IEEE|AWWA|DIN|BSRIA|CIBSE)\b/.test(t) && !refs.includes(t)) refs.push(t); }));
+  R.refs = rfDedupe(refs); R.uae = [...new Set(uae)];
+  // 6, 7, 8
+  if (sec.storage) R.storage = rfListOf(sec.storage);
+  if (sec.matchk) R.material_checks = rfListOf(sec.matchk);
+  if (sec.coord) R.coordination = rfListOf(sec.coord);
+  // 9 procedure with hold points
+  R.holdBoxes = {};
+  if (sec.proc) {
+    const proc = [];
+    rfGroups(sec.proc).forEach(g => {
+      let s = null;
+      const cur = () => s || (s = { title: g.head || (proc.length ? 'Further Works' : (R.tc ? 'Testing and Commissioning' : 'Installation Procedure')), steps: [] }, proc.push(s), s);
+      g.seq.forEach(b => {
+        if (b.k === 'p') { if (!rfIsFixed(b.t) && !rfPlaceholder(b.t)) { const t = rfClean(b.t); if (t) cur().steps.push(t); } return; }
+        const hb = rfHoldBox(b);
+        if (hb) {
+          R.holdBoxes[hb.no] = R.holdBoxes[hb.no] || hb;
+          const x = cur(); const i = x.steps.length - 1;
+          if (i >= 0 && typeof x.steps[i] === 'string') x.steps[i] = { t: x.steps[i], hp: hb.no };
+          else if (!(x.hp || []).includes(hb.no)) x.hp = [...(x.hp || []), hb.no];
+          return;
+        }
+        // a table of steps in another layout: the longest column is the step
+        const rows = b.rows.length > 1 && b.rows[0].every(c => c.t.length <= 40) ? b.rows.slice(1) : b.rows;
+        rows.forEach(r => { const c = r.reduce((a, y) => (y.t.length > a.t.length ? y : a), r[0]); const t = rfClean(c.t.replace(/\n/g, ' ')); if (t && t.length > 8) cur().steps.push(t); });
+      });
+      // a hold point after the last step of a section is a section hold point (as in the library)
+      if (s && s.steps.length) { const i = s.steps.length - 1, l = s.steps[i]; if (typeof l !== 'string') { s.hp = [l.hp, ...(s.hp || [])]; s.steps[i] = l.t; } }
+    });
+    R.procedure = proc.filter(x => x.steps.length || (x.hp || []).length);
+  }
+  // 10 acceptance criteria, parameters, hold point summary
+  if (sec.itr) {
+    const gs = rfGroups(sec.itr);
+    R.acceptance = gs.filter(g => /acceptance|criteria|tolerance/i.test(g.head)).flatMap(g => rfItems(g.seq));
+    rfTables(sec.itr).forEach(tb => {
+      const h = rfHead(tb.rows[0] || []);
+      if (h.some(x => /parameter/.test(x)) && h.some(x => /value/.test(x))) {
+        const li = h.findIndex(x => /parameter/.test(x)), vi = h.findIndex(x => /value/.test(x));
+        R.params = tb.rows.slice(1).map(r => ({ label: rfCell(rfGrid(r), li), value: rfCell(rfGrid(r), vi) })).filter(p => p.label && p.value && !rfPlaceholder(p.label + p.value));
+      } else if (h.includes('itp') && h.some(x => /inspection|test/.test(x))) {
+        R.hpSummary = tb.rows.slice(1).map(r => { const g = rfGrid(r); return { no: rfCell(g, 0), item: rfCell(g, 1), record: rfCell(g, 2), oxy: rfCode(rfCell(g, 3)), mc: rfCode(rfCell(g, 4)), cons: rfCode(rfCell(g, 5)), auth: rfCode(rfCell(g, 6)) }; }).filter(r => /^\d+(\.\d+)+$/.test(r.no));
+      }
+    });
+  }
+  // 11 hazards and permits
+  if (sec.hse) {
+    rfTables(sec.hse).forEach(tb => {
+      const h = rfHead(tb.rows[0] || []);
+      if (h.some(x => /hazard/.test(x)) && h.some(x => /control|measure|mitigation/.test(x)) && !h.some(x => /^\(?(l|s)\)?$|likelihood|severity|score/.test(x))) {
+        const hi = h.findIndex(x => /hazard/.test(x)), ci = h.findIndex(x => /control|measure|mitigation/.test(x));
+        R.hazards = (R.hazards || []).concat(tb.rows.slice(1).map(r => { const g = rfGrid(r); return { hazard: rfCell(g, hi).replace(/\n/g, ' '), control: rfCell(g, ci).replace(/\n/g, ' ') }; }).filter(x => x.hazard && x.control && !rfPlaceholder(x.hazard)));
+      }
+    });
+    R.permits = rfGroups(sec.hse).filter(g => /permit/i.test(g.head)).flatMap(g => rfItems(g.seq));
+  }
+  // 12 records
+  if (sec.records) R.records = rfListOf(sec.records);
+  // whole file: checklist, ITP, Risk Assessment, PPE
+  const raTables = [], itpRows = [], check = [];
+  allTables.forEach(tb => {
+    if (!tb.rows.length) return;
+    const ra = rfHeaderRows(tb, RF_IS_RA);
+    if (ra && ra.labels.some(x => /(^|[\s(])l\)?$|likelihood|severity|score|rating|risk level/.test(x))) { raTables.push(tb); return; }
+    if (rfHeaderRows(tb, RF_IS_ITP)) { itpRows.push(...rfItp(tb, R.tc)); return; }
+    const ck = rfHeaderRows(tb, RF_IS_CHECK);
+    if (ck) {
+      const ii = ck.labels.findIndex(x => /item|description|inspection|check|activity|requirement/.test(x));
+      tb.rows.slice(ck.n).forEach(r => { const g = rfGrid(r); const f = r.filter(c => c.t.trim()); if (f.length <= 1 && (r.length <= 2 || (f[0] && f[0].span >= 3))) return; const t = rfClean(rfCell(g, ii)); if (t && !rfPlaceholder(t)) check.push(t); });
+    }
+  });
+  if (itpRows.length) R.itp = itpRows;
+  if (check.length) R.checklist = check;
+  if (raTables.length) R.raSteps = raTables.flatMap(rfRaTable);
+  const pp = rfPpe(allTables);
+  if (pp.found) { R.ppe = pp.ppe; R.ppe_other = pp.other; R.raPermits = pp.permits; }
+  return R;
+}
+
+/* ---------- parts found -> new library entry (gaps filled from the closest standard) */
+const RF_PARTS = [['scope', 'Scope'], ['tools', 'Tools and equipment'], ['materials', 'Materials'], ['storage', 'Storage'], ['material_checks', 'Material checks'], ['coordination', 'Coordination'],
+  ['procedure', 'Procedure'], ['acceptance', 'Acceptance criteria'], ['params', 'Parameters'], ['itp', 'ITP'], ['checklist', 'Checklist'], ['hazards', 'Hazards'], ['permits', 'Permits'],
+  ['records', 'Records'], ['refs', 'International standards'], ['uae', 'Authority references'], ['ra', 'Risk Assessment']];
+function rfParamKey(label, used) {
+  let k = rfKey(label).replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 28) || 'param'; let x = k, i = 2;
+  while (used.has(x)) x = k + '_' + i++;
+  used.add(x); return x;
+}
+function refEntry(R, a) {
+  const m = matchTitle(a.title || R.title || '', a.disc);
+  const std = m && m.entry ? clone(m.entry) : {};
+  const e = {}; const from = {}; const fromStd = [];
+  // a part the file has a section for is copied as it is, even when empty (e.g. no activity-specific coordination);
+  // the main parts (scope, tools, materials, procedure, ITP, checklist) come from the standard when the file has none
+  const OPT = { storage: 'storage', material_checks: 'matchk', coordination: 'coord', acceptance: 'itr', params: 'itr', records: 'records', refs: 'refsTable' };
+  const present = new Set(R.present || []);
+  const good = !!(m && m.score >= 0.75);   // the standard is the same activity
+  const take = (k, v) => {
+    if ((Array.isArray(v) ? v.length : v) || (OPT[k] && present.has(OPT[k]))) { e[k] = v; from[k] = 'ref'; }
+    else if ((!(OPT[k] || k === 'permits') || good) && std[k] != null && (!Array.isArray(std[k]) || std[k].length)) { e[k] = clone(std[k]); from[k] = 'std'; fromStd.push(k); }   // the extras only from the same activity
+    else e[k] = Array.isArray(v) ? [] : v;
+  };
+  // hazards: the Method Statement table; else the Risk Assessment steps (files in other layouts often have only the RA)
+  const raHz = (R.raSteps || []).filter(x => !RA_MASTER.some(mm => ['31', '32'].includes(mm.no) && rfKey(mm.step) === rfKey(x.step)) && !/heat stress/i.test(x.step))
+    .map(x => ({ hazard: x.hazards || x.step, control: (x.controls || []).join(' ') })).filter(x => x.hazard && x.control);
+  ['scope', 'tools', 'materials', 'storage', 'material_checks', 'coordination', 'acceptance', 'checklist', 'records', 'refs'].forEach(k => take(k, R[k] || []));
+  take('hazards', (R.hazards || []).length ? R.hazards : raHz);
+  take('procedure', R.procedure || []);
+  // ITP: the file's ITP; else its hold point boxes; else the standard
+  let itp = R.itp || [];
+  if (!itp.length && Object.keys(R.holdBoxes || {}).length) {
+    const sum = Object.fromEntries((R.hpSummary || []).map(r => [r.no, r]));
+    itp = Object.values(R.holdBoxes).sort((x, y) => x.no.localeCompare(y.no, undefined, { numeric: true })).map(h => {
+      const pre = +h.no.split('.')[0]; const s = sum[h.no] || {};
+      return { stage: RF_STAGE[R.tc ? 'TC' : 'INS'][Math.min(4, Math.max(0, pre - 1))], no: h.no, item: h.item || s.item || '', resp: 'Oxypro Site Engineer / QA/QC', method: h.method, criteria: h.criteria, freq: 'Each area / floor', record: h.record || s.record || '', oxy: h.oxy || s.oxy || 'H', mc: h.mc || s.mc || '', cons: h.cons || s.cons || '', auth: h.auth || s.auth || '' };
+    });
+  }
+  take('itp', itp);
+  // hold points that are not in the ITP (the two came from different places, or the file's ITP row is missing)
+  {
+    const nos = new Set((e.itp || []).map(r => r.no));
+    (e.procedure || []).forEach(sec => { sec.hp = (sec.hp || []).filter(h => nos.has(h)); if (!sec.hp.length) delete sec.hp; sec.steps = sec.steps.map(s => (typeof s === 'string' || nos.has(s.hp)) ? s : s.t); });
+  }
+  // permits: the Method Statement list, else the RA tick boxes
+  take('permits', (R.permits && R.permits.length) ? R.permits : (R.raPermits || []).filter(p => !/^permit to work$/i.test(p)));
+  // parameters: keep the standard's key and search words where the label matches, and put the {key} back in the steps
+  if ((R.params || []).length) {
+    const used = new Set();
+    e.params = R.params.map(p => {
+      const sp = (std.params || []).find(x => rfKey(x.label) === rfKey(p.label));
+      const key = sp && !used.has(sp.key) ? (used.add(sp.key), sp.key) : rfParamKey(p.label, used);
+      return { key, label: p.label, default: p.value, find: sp ? sp.find || [] : [] };
+    });
+    from.params = 'ref';
+    const sub = t => e.params.reduce((s, p) => (p.default.length >= 10 && !/[{}]/.test(p.default)) ? s.split(p.default).join('{' + p.key + '}') : s, t);
+    if (from.procedure === 'ref') e.procedure.forEach(sec => { sec.steps = sec.steps.map(s => typeof s === 'string' ? sub(s) : Object.assign(s, { t: sub(s.t) })); });
+  } else take('params', []);
+  // authority references: the file's choice for its own emirate, the standard's for the other emirates
+  if ((R.uae || []).length) {
+    const ems = new Set(R.uae.flatMap(k => (NORMMAP[k] || {}).emirates || []));
+    e.uae = [...new Set([...R.uae, ...(std.uae || []).filter(k => NORMMAP[k] && !NORMMAP[k].emirates.some(x => ems.has(x)))])];
+    from.uae = 'ref';
+  } else take('uae', []);
+  // Risk Assessment
+  if ((R.raSteps || []).length) {
+    const steps = R.raSteps.map(s => { const x = clone(s); ['31', '32'].forEach(no => { const mm = RA_MASTER.find(y => y.no === no); if (mm && rfKey(mm.step) === rfKey(x.step)) x.std = no; }); return x; });
+    const sp = good && std.ra && Array.isArray(std.ra.ppe) ? std.ra.ppe : ['helmet', 'shoes', 'hivis', 'glasses', 'gloves_cut'];
+    e.ra = { steps, ppe: R.ppe && R.ppe.length ? R.ppe : sp, ppe_other: R.ppe ? (R.ppe_other || '') : ((good && std.ra && std.ra.ppe_other) || '') };
+    from.ra = 'ref';
+  } else if (std.ra && (from.hazards !== 'ref' || !(e.hazards || []).length || (m && m.score >= 0.75))) { e.ra = clone(std.ra); from.ra = 'std'; fromStd.push('ra'); }   // same activity as the standard: its Risk Assessment
+  else from.ra = (e.hazards || []).length ? 'haz' : '';
+  // activity wording (Section 1): only when the new title is the same activity
+  const same = R.title && rfKey(R.title) === rfKey(a.title || R.title);
+  if (same && R.act) { const s = R.act.match(/^(?:installation|testing and commissioning) of (.+)$/i); if (s) e.system = s[1]; else { e.act = R.act; if (std.act && rfKey(std.act) === rfKey(R.act) && std.system) e.system = std.system; } }
+  e.aliases = [];
+  return { entry: e, from, fromStd, std: m && m.entry, same };
+}
+function refSummary(R, built) {
+  const e = built.entry, f = built.from;
+  const n = k => (e[k] || []).length;
+  const steps = (e.procedure || []).reduce((s, x) => s + x.steps.length, 0);
+  const hps = placedHps(e).size;
+  const lines = [];
+  const add = (k, txt) => { if (f[k] === 'ref') lines.push(txt); };
+  add('procedure', `Procedure: ${n('procedure')} sections, ${steps} steps, ${hps} hold points`);
+  add('itp', `ITP: ${n('itp')} inspections`);
+  add('checklist', `Checklist: ${n('checklist')} items`);
+  if (f.ra === 'ref') add('ra', `Risk Assessment: ${(e.ra.steps || []).length} steps${(e.ra.ppe || []).length ? `, ${e.ra.ppe.length} PPE` : ''}`);
+  if (n('hazards')) add('hazards', `Hazards: ${n('hazards')}`);
+  const small = [['scope', 'scope'], ['tools', 'tools'], ['materials', 'materials'], ['storage', 'storage'], ['material_checks', 'material checks'], ['coordination', 'coordination'], ['acceptance', 'acceptance criteria'], ['params', 'parameters'], ['permits', 'permits'], ['records', 'records'], ['refs', 'standards'], ['uae', 'authority references']]
+    .filter(([k]) => f[k] === 'ref' && n(k)).map(([k, t]) => `${n(k)} ${t}`);
+  if (small.length) lines.push('Also: ' + small.join(', '));
+  const std = RF_PARTS.filter(([k]) => f[k] === 'std').map(([, t]) => t);
+  return { lines, std, ra: f.ra, found: lines.length };
+}
+
+/* ---------- UI actions */
+async function importRefMsra(file) {
+  const a = S.ui.addForm; if (!a) return;
+  const st = $('#add-status');
+  if (!/\.docx$/i.test(file.name)) {
+    const msg = /\.pdf$/i.test(file.name) ? 'PDF files cannot be read for this – upload the Word (.docx) version of the MSRA.' : /\.doc$/i.test(file.name) ? 'Open this file in Word and save it as .docx, then upload it again.' : 'Upload a Word (.docx) MSRA, Method Statement or Risk Assessment.';
+    if (st) st.textContent = msg; toast(msg, 6000); return;
+  }
+  if (st) st.textContent = 'Reading ' + file.name + '…';
+  const R = await parseRefMsra(await file.arrayBuffer());
+  const got = ['procedure', 'itp', 'checklist', 'raSteps', 'hazards', 'scope'].filter(k => (R[k] || []).length);
+  if (!got.length) {
+    const msg = 'No Method Statement or Risk Assessment content was found in ' + file.name + '.';
+    a._ref = null; if (st) st.textContent = msg; toast(msg, 6000); return;
+  }
+  if (!a.title && R.title) { a.title = R.title; a.disc = guessDisc(R.title) || a.disc; a.stage = (R.tc || isTCTitle(R.title)) ? 'TC' : 'INS'; }
+  a._ref = { name: file.name, R };
+  save(); render();
+  toast('Read ' + file.name + ' – check the summary, then create the Method Statement');
+}
+function addFromRef() {
+  const a = S.ui.addForm; if (!a || !a._ref || !a.title) return;
+  const built = refEntry(a._ref.R, a);
+  built.entry.refFile = a._ref.name;
+  addCustom(built.entry, a, 'Method Statement added from ' + a._ref.name);
+}
+function vRefNote(a) {
+  const ref = a._ref; if (!ref) return '';
+  const built = refEntry(ref.R, a); const sm = refSummary(ref.R, built);
+  const stdT = built.std ? built.std.title : 'the closest standard';
+  return `<div class="note ok ref-note"><div class="ref-hd"><b>Reference MSRA:</b> <span class="mono">${esc(ref.name)}</span><span class="grow"></span><button class="btn small ghost" data-act="ref-remove">Remove file</button></div>
+    <ul class="ref-list">${sm.lines.map(t => `<li>${esc(t)}</li>`).join('')}</ul>
+    ${sm.std.length ? `<div class="muted">Not in the file, taken from the closest standard (${esc(stdT)}): ${esc(sm.std.join(', '))}.</div>` : ''}
+    ${sm.ra === 'haz' ? '<div class="muted">Risk Assessment: not in the file – it will be built from the hazards table; review it on the Risk Assessment tab.</div>' : ''}
+    ${ref.R.title && !built.same ? `<div class="muted">The file is for “${esc(ref.R.title)}”; the new Method Statement uses the title above.</div>` : ''}
+    <div class="muted">Project name, client, document numbers and material submittal references in the file are not copied.</div></div>`;
+}
+
 /* ============================================================ runtime capabilities */
 let SAMPLE = null, DL = null;
 (async () => {
@@ -3468,8 +4084,10 @@ function vAddForm() {
     <div class="field"><label for="add-stage">Stage</label><select id="add-stage"><option value="INS" ${a.stage !== 'TC' ? 'selected' : ''}>Installation</option><option value="TC" ${a.stage === 'TC' ? 'selected' : ''}>Testing & commissioning</option></select></div>
   </div>
   ${regAddDupHtml(a)}
-  ${m ? `<div class="note info">Closest Oxypro standard: <b>${esc(m.entry.title)}</b>. Start from it and edit the content, ${SAMPLE ? 'or let Claude draft a new standard for this title.' : 'then adjust the steps and ITP.'}</div>` : ''}
-  <div class="row"><button class="btn" data-act="add-from-std" ${m ? '' : 'disabled'}>Start from closest standard</button>${SAMPLE ? `<button class="btn primary" data-act="add-ai" ${a.title ? '' : 'disabled'}>Draft with Claude</button>` : ''}<span id="add-status" class="muted"></span></div>
+  ${m && !a._ref ? `<div class="note info">Closest Oxypro standard: <b>${esc(m.entry.title)}</b>. Start from it and edit the content${SAMPLE ? ', let Claude draft a new standard for this title' : ''} or upload an existing MSRA to copy its content.</div>` : ''}
+  ${vRefNote(a)}
+  <div class="row">${a._ref ? `<button class="btn primary" data-act="add-from-ref" ${a.title ? '' : 'disabled'}>Create from this MSRA</button>` : ''}<button class="btn" data-act="add-from-std" ${m ? '' : 'disabled'}>Start from closest standard</button><label class="btn" id="add-ref-btn" title="Reads a Word MSRA, Method Statement or Risk Assessment and copies its procedure, hold points, ITP, checklist and Risk Assessment into the new Method Statement">${a._ref ? 'Upload another MSRA' : 'Upload MSRA for reference'}<input type="file" data-refmsra="1" accept=".docx" class="hidden-input"></label>${SAMPLE ? `<button class="btn ${a._ref ? '' : 'primary'}" data-act="add-ai" ${a.title ? '' : 'disabled'}>Draft with Claude</button>` : ''}<span id="add-status" class="muted"></span></div>
+  ${a._ref ? '' : '<p class="muted small ref-help">Upload MSRA for reference: choose a Word (.docx) MSRA, Method Statement or Risk Assessment – its procedure, hold points, ITP, checklist and Risk Assessment are copied into the new Method Statement. When the title is empty, the title in the file is used.</p>'}
   </div></div>`;
 }
 
@@ -3502,7 +4120,7 @@ function ta(label, key, e, o = {}) {
   return `<div class="field"><label for="e-${key}">${esc(label)}</label><textarea id="e-${key}" data-ebind="${key}" data-kind="lines" class="${o.tall ? 'tall' : ''}">${esc(v)}</textarea>${o.hint ? `<div class="hint">${o.hint}</div>` : ''}</div>`;
 }
 function eGeneral(row, e) {
-  return `<div class="grid2">
+  return `${e.refFile ? `<div class="note info ref-from">Content copied from the uploaded MSRA <b>${esc(e.refFile)}</b> – check it before issuing.</div>` : ''}<div class="grid2">
     <div class="field"><label for="e-title">Title</label><input type="text" id="e-title" data-ebind="title" value="${esc(e.title)}"></div>
     <div class="field"><label for="e-system">Activity wording used in sentences</label><input type="text" id="e-system" data-ebind="system" value="${esc(e.system || '')}"><div class="hint">“…inspection procedures for the installation of <i>${esc(e.system || '')}</i>”</div></div>
     <div class="field"><label for="r-docNo">Document No.</label><input type="text" id="r-docNo" data-rbind="docNo" value="${esc(row.docNo || '')}" placeholder="${esc(docNo(Object.assign({}, row, { docNo: '' })))}"></div>
@@ -3690,7 +4308,7 @@ document.addEventListener('change', async ev => {
   if (t.dataset.mpick != null) { const row = curRow(); if (row) { setMatRef(row, t.dataset.mpick, { pick: t.value }); save(); queueRender(); } return; }
   if (t.dataset.imp != null) { const imp = S.ui.importPreview; const r = imp.rows[+t.dataset.imp]; r.libId = t.value; r.score = 1; return; }
   if (t.dataset.aisel != null) { S.ui.ai.items[+t.dataset.aisel].on = t.checked; return; }
-  if (t.id === 'add-title' || t.id === 'add-disc' || t.id === 'add-stage') { S.ui.addForm = { title: $('#add-title').value.trim(), disc: $('#add-disc').value, stage: $('#add-stage').value }; queueRender(); return; }
+  if (t.id === 'add-title' || t.id === 'add-disc' || t.id === 'add-stage') { S.ui.addForm = Object.assign(S.ui.addForm || {}, { title: $('#add-title').value.trim(), disc: $('#add-disc').value, stage: $('#add-stage').value }); queueRender(); return; }
   if (t.type === 'file' && t.files && t.files.length) { await onFiles(t, [...t.files]); t.value = ''; }
 });
 document.addEventListener('dragover', ev => { const d = ev.target.closest('[data-drop]'); if (d) { ev.preventDefault(); d.classList.add('over'); } });
@@ -3721,6 +4339,7 @@ async function onFiles(input, files) {
     if (input.id === 'up-spec') return await uploadSpecs(files);
     if (input.id === 'up-log') return await importLog(files[0]);
     if (input.dataset.msl) return await importMsl(files[0]);
+    if (input.dataset.refmsra) return await importRefMsra(files[0]);
     if (input.id === 'up-lib') return await importLibrary(files[0]);
     if (input.id === 'open-project') return await openProject(files[0]);
   } catch (err) { console.error(err); toast('Could not read ' + (files[0] && files[0].name) + ': ' + (err.message || err), 6000); }
@@ -3895,7 +4514,7 @@ ${JSON.stringify(example)}`, { modelTier: 'complex' });
     addCustom(res, a);
   } catch (err) { if (st) st.textContent = aiErr(err); }
 }
-function addCustom(entry, a) {
+function addCustom(entry, a, msg) {
   const id = 'C-' + Date.now().toString(36);
   entry.id = id; entry.disc = a.disc; entry.stage = a.stage; entry.title = a.title;
   ['aliases', 'materials', 'scope', 'tools', 'storage', 'material_checks', 'coordination', 'acceptance', 'checklist', 'hazards', 'permits', 'records', 'refs', 'uae', 'params'].forEach(k => { if (!Array.isArray(entry[k])) entry[k] = []; });
@@ -3904,7 +4523,7 @@ function addCustom(entry, a) {
   const row = { key: id, libId: id, title: a.title, disc: a.disc, stage: a.stage, seq, related: '', selected: true, docNo: '', rev: '', area: '', raRef: '', specSections: '' };
   S.register.push(row);
   S.register.sort((x, y) => DISC_ORDER.indexOf(x.disc) - DISC_ORDER.indexOf(y.disc) || (x.stage === 'TC') - (y.stage === 'TC') || x.seq - y.seq);
-  S.ui.addForm = null; save(); go('editor', { editor: row.key, sub: 'general' }); toast('Method Statement added');
+  S.ui.addForm = null; save(); go('editor', { editor: row.key, sub: 'general' }); toast(msg || 'Method Statement added');
 }
 
 /* ============================================================ clicks */
@@ -3987,7 +4606,9 @@ document.addEventListener('click', async ev => {
       case 'add-ms': S.ui.addForm = { title: '', disc: S.ui.filter !== 'ALL' ? S.ui.filter : 'MEC', stage: 'INS' }; render(); break;
       case 'add-cancel': S.ui.addForm = null; render(); break;
       case 'add-from-std': { const a = S.ui.addForm; const m = matchTitle(a.title, a.disc); addCustom(clone(m.entry), a); break; }
-      case 'add-ai': S.ui.addForm = { title: $('#add-title').value.trim(), disc: $('#add-disc').value, stage: $('#add-stage').value }; await aiDraft(); break;
+      case 'add-from-ref': addFromRef(); break;
+      case 'ref-remove': if (S.ui.addForm) { S.ui.addForm._ref = null; render(); } break;
+      case 'add-ai': S.ui.addForm = Object.assign(S.ui.addForm || {}, { title: $('#add-title').value.trim(), disc: $('#add-disc').value, stage: $('#add-stage').value }); await aiDraft(); break;
       case 'lib-export': await saveFile(`Oxypro MS Standard Library ${todayISO()}.json`, new Blob([JSON.stringify(allLib(), null, 1)], { type: 'application/json' })); break;
       case 'lib-reset': LIB_OVR = {}; try { localStorage.removeItem(LIB_KEY); } catch (e) { } render(); toast('Local standard changes discarded'); break;
       case 'msl-remove': S.ui.mslConfirm = true; render(); break;
