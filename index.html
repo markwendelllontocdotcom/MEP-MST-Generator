@@ -297,6 +297,9 @@ table.mref .mref-val{font-family:var(--f-mono);font-size:12.5px;min-width:150px;
 .ref-note .muted{font-size:13px;margin-top:3px}
 .ref-help{margin:8px 0 0;font-size:13px}
 .ref-from{margin-bottom:12px}
+.ref-proj{font-size:13px;margin-top:6px}
+.ref-warn{font-size:13px;margin-top:6px;border-left:3px solid var(--warn);background:var(--warn-soft);padding:6px 10px;border-radius:0 5px 5px 0}
+.ref-warn ul{margin:4px 0 0 18px;padding:0}
 
 </style>
 <header class="top">
@@ -1456,16 +1459,15 @@ function partyCodes(r) {
   return `Oxypro: ${n(r.oxy)}   ·   Main Contractor: ${n(r.mc)}   ·   Consultant: ${n(r.cons)}   ·   Authority / Third Party: ${n(r.auth)}`;
 }
 /* format 13-Oct-2026: AUTH lists the authorities of the project location */
-function authParties() {
-  return ({
-    abudhabi: 'Abu Dhabi Civil Defence Authority, TAQA Distribution',
-    dubai: 'Dubai Civil Defence, DEWA, SIRA',
-    dda: 'Dubai Development Authority, Dubai Civil Defence, DEWA, SIRA',
-    trakhees: 'Trakhees, Dubai Civil Defence, DEWA, SIRA',
-    sharjah: 'Sharjah Civil Defence, SEWA',
-    northern: 'Civil Defence, Etihad Water & Electricity'
-  })[S.project.emirate] || 'Civil Defence, Electricity Authority';
-}
+const AUTH_PARTIES = {
+  abudhabi: 'Abu Dhabi Civil Defence Authority, TAQA Distribution',
+  dubai: 'Dubai Civil Defence, DEWA, SIRA',
+  dda: 'Dubai Development Authority, Dubai Civil Defence, DEWA, SIRA',
+  trakhees: 'Trakhees, Dubai Civil Defence, DEWA, SIRA',
+  sharjah: 'Sharjah Civil Defence, SEWA',
+  northern: 'Civil Defence, Etihad Water & Electricity'
+};
+function authParties() { return AUTH_PARTIES[S.project.emirate] || 'Civil Defence, Electricity Authority'; }
 function codesNote(sz = 17, o = {}) {
   return P([R('Codes: ', { b: true, sz }), R('H = Hold Point (no work on that element shall proceed until accepted by the party indicated);  W = Witness;  I = Inspection;  R = Review of Records;  S = Surveillance.   ', { sz }), R('Parties: ', { b: true, sz }), R(`OXY = Oxypro QA/QC;  MC = Main Contractor;  CONS = Consultant;  AUTH = Authority / Third Party (${authParties()}, manufacturer).`, { sz })], Object.assign({ before: 80, after: 60, line: 260 }, o));
 }
@@ -3467,12 +3469,102 @@ function rfTitleCase(t) {   // "INSTALLATION OF GREASE INTERCEPTOR" -> "Installa
   }).join('');
 }
 
+/* ---------- the file's own project details (user, 28 Oct 2026: "omit the project details from the reference file and
+   replace with the Project details of the current project") */
+const RF_PLABEL = [['name', /^project( name)?$/], ['code', /^project (no\.?|number|code)$/], ['client', /^client( \/ employer)?$|^employer$/], ['consultant', /^consultant( \/ engineer)?$|^engineer$/],
+  ['mainContractor', /^(main )?contractor$/], ['mepContractor', /^mep contractor$|^sub-?contractor$/], ['area', /^location( \/ area( of work)?)?$|^area of work$/],
+  ['ms', /^ms ref\.?( no\.?)?$|^method statement ref\. no\.( ?\/ ?rev\. no\.)?$/], ['itp', /^itp ref\.?( no\.?)?$/], ['ra', /^risk assessment ref\. no\.?$|^ra ref\.?( no\.?)?$/]];
+function rfProjDetails(blocks, sec, tables) {
+  const P = {};
+  const set = (k, v) => { v = rfN(v).replace(/^[:\s]+/, '').trim(); if (!v || P[k] || rfPlaceholder(v) || /^[–\-\/.]+$/.test(v)) return; if (k === 'ms') v = v.replace(/\s*\/\s*rev\.?.*$/i, ''); P[k] = v; };
+  const label = t => { const k = rfKey(t).replace(/:$/, ''); const hit = RF_PLABEL.find(([, re]) => re.test(k)); return hit ? hit[0] : null; };
+  tables.forEach(tb => {
+    if (rfHeaderRows(tb, RF_IS_ITP) || rfHeaderRows(tb, RF_IS_RA) || rfHeaderRows(tb, RF_IS_CHECK)) return;
+    tb.rows.forEach(r => { const g = rfGrid(r); for (let i = 0; i < g.length; i++) { const k = label(g[i].t); if (!k) continue; const v = g.slice(i + 1).find(c => c !== g[i]); if (v && !label(v.t)) set(k, v.t); } });
+  });
+  blocks.slice(0, 80).forEach(b => { if (b.k !== 'p') return; const m = b.t.match(/^(project( name)?|client|consultant|main contractor|contractor|location)\s*:\s*(.{2,})$/i); if (m) { const k = label(m[1]); if (k) set(k, m[3]); } });
+  if (!P.code && P.ms) { const c = P.ms.split(/-MEP-/i)[0]; if (c && c !== P.ms && c.length <= 14) P.code = c; }
+  // cover lines of the Oxypro format (project name / location / city under the cover photo)
+  const toc = blocks.findIndex(b => b.k === 'p' && /^table of contents$/i.test(b.t));
+  if (toc > 0) P.cover = blocks.slice(0, toc).filter(b => b.k === 'p' && b.t && b.t === b.t.toUpperCase() && /[A-Z]{3}/.test(b.t) && b.t.length <= 90 && !/method statement|risk assessment|^rev/i.test(b.t)).slice(0, 3).map(b => b.t);
+  // emirate: the AUTH note of the ITP codes, else the RA framework ticks
+  const note = blocks.find(b => b.k === 'p' && /AUTH = Authority \/ Third Party \(/.test(b.t));
+  if (note) { const x = (note.t.match(/AUTH = Authority \/ Third Party \((.*?)(?:,\s*manufacturer)?\)\.?\s*$/) || [])[1]; const em = x && Object.keys(AUTH_PARTIES).find(k => rfKey(AUTH_PARTIES[k]) === rfKey(x)); if (em) P.emirate = em; }
+  if (!P.emirate) for (const tb of tables) for (const r of tb.rows) { const t = r.map(c => c.t).join(' '); if (!/hse framework/i.test(t)) continue; const on = rfTicks(t).filter(x => x.on).map(x => x.label).join(' '); if (/OSHAD/i.test(on)) P.emirate = 'abudhabi'; else if (/Dubai Municipality/i.test(on)) P.emirate = 'dubai'; else if (/Trakhees/i.test(on)) P.emirate = 'trakhees'; else if (/Sharjah/i.test(on)) P.emirate = 'sharjah'; }
+  return P;
+}
+/* the file's project details in the copied text -> the current project's (or the role, when the current one is not filled in) */
+function rfProjSwaps(P, nos) {
+  const Pj = S.project, out = [];
+  const add = (from, to, kind) => {
+    from = rfN(from || '').trim(); if (!from || from.length < 2) return;
+    if (/^(the )?(project|client|consultant|main contractor|contractor|employer|engineer|n\/?a|tbc|tba|prj)$/i.test(from)) return;
+    if (rfKey(from) === rfKey(to)) return;
+    if (out.some(x => rfKey(x.from) === rfKey(from))) return;
+    const one = !/\s/.test(from) || from.length < 6;   // one word ("FEDERAL"): only as written in the file, whole word
+    out.push({ from, to, kind, re: new RegExp('(^|[^A-Za-z0-9])(' + rfRe(from).replace(/\\? /g, '\\s+') + ')(?![A-Za-z0-9])', one ? 'g' : 'gi') });
+  };
+  const nm = Pj.name || 'the project';
+  ['ms', 'itp', 'ra'].forEach(k => add(P[k], nos[k], 'document number'));
+  add(P.name, nm, 'project');
+  if (P.name && /,/.test(P.name)) { const short = P.name.split(',')[0].trim(); if (short.split(/\s+/).length >= 2 && short.length >= 8) add(short, nm, 'project'); }
+  (P.cover || []).forEach((c, i) => add(c, (i === 0 ? (Pj.cover1 || Pj.name) : i === 1 ? Pj.cover2 : Pj.cover3) || (i === 0 ? nm : i === 1 ? 'the project location' : (Pj.cover3 || 'the UAE')), 'project'));
+  add(P.client, Pj.client || 'the Client', 'client');
+  add(P.consultant, Pj.consultant || 'the Consultant', 'consultant');
+  add(P.mainContractor, Pj.mainContractor || 'the Main Contractor', 'main contractor');
+  add(P.mepContractor, Pj.mepContractor || 'OXYPRO ELECTROMECHANICAL WORKS LLC', 'MEP contractor');
+  add(P.area, Pj.area || 'the work area', 'location');
+  if (P.code && P.code !== (Pj.code || 'PRJ')) add(P.code, Pj.code || 'PRJ', 'project code');
+  return out.sort((a, b) => (a.kind === 'document number' ? -1 : 0) - (b.kind === 'document number' ? -1 : 0) || b.from.length - a.from.length);
+}
+function rfSwapText(t, swaps, cnt) {
+  if (typeof t !== 'string' || !t) return t;
+  return swaps.reduce((s, w) => s.replace(w.re, (m, pre) => { cnt.n++; cnt.kinds.add(w.kind); return pre + w.to; }), t);
+}
+function rfApplyProject(e, swaps) {
+  const cnt = { n: 0, kinds: new Set() }; if (!swaps.length) return cnt;
+  const T = t => rfSwapText(t, swaps, cnt);
+  ['scope', 'tools', 'materials', 'storage', 'material_checks', 'coordination', 'acceptance', 'checklist', 'permits', 'records', 'refs'].forEach(k => { if (Array.isArray(e[k])) e[k] = e[k].map(T); });
+  (e.procedure || []).forEach(sec => { sec.title = T(sec.title); sec.steps = sec.steps.map(st => typeof st === 'string' ? T(st) : Object.assign(st, { t: T(st.t) })); });
+  (e.params || []).forEach(p => { p.label = T(p.label); p.default = T(p.default); });
+  (e.itp || []).forEach(r => ['stage', 'item', 'resp', 'method', 'criteria', 'freq', 'record'].forEach(k => { r[k] = T(r[k]); }));
+  (e.hazards || []).forEach(h => { h.hazard = T(h.hazard); h.control = T(h.control); });
+  if (e.ra) { (e.ra.steps || []).forEach(x => { ['step', 'hazards', 'persons', 'resp'].forEach(k => { x[k] = T(x[k]); }); x.controls = (x.controls || []).map(T); }); e.ra.ppe_other = T(e.ra.ppe_other); }
+  if (e.act) e.act = T(e.act); if (e.system) e.system = T(e.system);
+  return cnt;
+}
+/* lines naming the authorities of one other emirate only (lists such as "DEWA / TAQA / SEWA" are left alone) */
+const RF_EM_FAMILY = { dubai: 'dubai', dda: 'dubai', trakhees: 'dubai', abudhabi: 'abudhabi', sharjah: 'sharjah', northern: 'northern' };
+const RF_EM_WORDS = {
+  dubai: /\b(DEWA|Dubai Municipality|Dubai Civil Defence|Dubai Building Code|Dubai Electricity|SIRA|Al Sa'?fat|DM Code|Trakhees|PCFC|DDA|Dubai Development Authority)\b/g,
+  abudhabi: /\b(TAQA|ADDC|AADC|ADCDA|Abu Dhabi Civil Defence|Abu Dhabi Municipality|Abu Dhabi International Building Code|OSHAD(?:-SF)?|Estidama|ADMCC|ADSSC|DMT)\b/g,
+  sharjah: /\b(SEWA|Sharjah Civil Defence|Sharjah Municipality)\b/g,
+  northern: /\b(EtihadWE|Etihad Water(?: & Electricity)?)\b/g
+};
+function rfOtherEmirate(e) {
+  const cur = RF_EM_FAMILY[S.project.emirate]; if (!cur) return [];
+  const out = [];
+  const chk = (where, t) => {
+    if (typeof t !== 'string' || !t) return;
+    const fams = Object.entries(RF_EM_WORDS).map(([f, re]) => [f, [...new Set(t.match(re) || [])]]).filter(([, w]) => w.length);
+    if (fams.length === 1 && fams[0][0] !== cur) out.push({ where, text: t, words: fams[0][1] });
+  };
+  (e.scope || []).forEach(t => chk('Scope', t)); (e.coordination || []).forEach(t => chk('Coordination', t)); (e.storage || []).forEach(t => chk('Storage', t)); (e.material_checks || []).forEach(t => chk('Material checks', t));
+  (e.procedure || []).forEach((sec, i) => sec.steps.forEach((st, j) => chk(`Procedure 9.${i + 1} step ${j + 1}`, typeof st === 'string' ? st : st.t)));
+  (e.acceptance || []).forEach(t => chk('Acceptance criteria', t)); (e.itp || []).forEach(r => chk('ITP ' + r.no, [r.item, r.method, r.criteria, r.record].join(' · ')));
+  (e.checklist || []).forEach((t, i) => chk('Checklist ' + (i + 1), t)); (e.hazards || []).forEach(h => chk('Hazards', h.hazard + ' · ' + h.control));
+  (e.permits || []).forEach(t => chk('Permits', t)); (e.records || []).forEach(t => chk('Records', t));
+  if (e.ra) (e.ra.steps || []).forEach((x, i) => chk('Risk Assessment step ' + (i + 1), [x.step, x.hazards, ...(x.controls || [])].join(' · ')));
+  return out;
+}
+
 /* ---------- the whole reader: Word file -> { ref: parts found, title, tc } */
 async function parseRefMsra(buf) {
   const blocks = await rfReadDocx(buf);
   const { sec, heads } = rfSections(blocks);
   const allTables = blocks.filter(b => b.k === 't');
   const R = { present: Object.keys(sec) };
+  R.proj = rfProjDetails(blocks, sec, allTables);
   // title: Activity row of the checklist / ITP / RA header tables, or "Method Statement for …"
   for (const tb of allTables) {
     if (rfHeaderRows(tb, RF_IS_ITP) || rfHeaderRows(tb, RF_IS_RA) || rfHeaderRows(tb, RF_IS_CHECK)) continue;   // a column heading "Activity" is not the title
@@ -3672,7 +3764,12 @@ function refEntry(R, a) {
   const same = R.title && rfKey(R.title) === rfKey(a.title || R.title);
   if (same && R.act) { const s = R.act.match(/^(?:installation|testing and commissioning) of (.+)$/i); if (s) e.system = s[1]; else { e.act = R.act; if (std.act && rfKey(std.act) === rfKey(R.act) && std.system) e.system = std.system; } }
   e.aliases = [];
-  return { entry: e, from, fromStd, std: m && m.entry, same };
+  // the file's project details -> the current project's; the new Method Statement's own numbers for the file's numbers
+  const seq = Math.max(0, ...S.register.filter(r => r.disc === a.disc).map(r => r.seq || 0)) + 1;
+  const nr = { key: '_new', libId: '_new', disc: a.disc, stage: a.stage, seq, docNo: '', raRef: '' };
+  const swaps = rfProjSwaps(R.proj || {}, { ms: docNo(nr), itp: itpNoOf(nr), ra: raNoOf(nr) });
+  const swapped = rfApplyProject(e, swaps);
+  return { entry: e, from, fromStd, std: m && m.entry, same, swaps, swapped, other: rfOtherEmirate(e) };
 }
 function refSummary(R, built) {
   const e = built.entry, f = built.from;
@@ -3719,6 +3816,22 @@ function addFromRef() {
   built.entry.refFile = a._ref.name;
   addCustom(built.entry, a, 'Method Statement added from ' + a._ref.name);
 }
+function vRefProj(R, built) {
+  const P = R.proj || {}, Pj = S.project;
+  const theirs = [P.name, P.code, P.client && 'client ' + P.client, P.consultant && 'consultant ' + P.consultant, P.mainContractor && 'main contractor ' + P.mainContractor].filter(Boolean);
+  const ours = Pj.name ? `${Pj.name}${Pj.code && Pj.code !== 'PRJ' ? ' · ' + Pj.code : ''}` : 'the current project (no project name set yet)';
+  const n = built.swapped.n;
+  const same = P.name && Pj.name && rfKey(P.name) === rfKey(Pj.name);
+  let html = `<div class="ref-proj"><b>Project details:</b> ${same ? `the file is from the current project (${esc(ours)}); the new Method Statement gets its own document numbers.`
+    : `${theirs.length ? `the file's project (${esc(theirs.join(' · '))}) is not copied – ` : 'project name, client, document numbers and material submittal references in the file are not copied – '}the new Method Statement uses ${esc(ours)} from the Project tab.`}${n ? ` ${n} mention${n > 1 ? 's' : ''} of the file's project details in the content ${n > 1 ? 'were' : 'was'} replaced with the current project's.` : ''} Material submittal references come from this project's Material Submittal Log.</div>`;
+  const ot = built.other || [];
+  if (ot.length) {
+    const words = [...new Set(ot.flatMap(x => x.words))].slice(0, 4).join(', ');
+    const em = (EMIRATES[Pj.emirate] || '').split(' – ')[0];
+    html += `<div class="ref-warn"><b>Check after creating:</b> ${ot.length} line${ot.length > 1 ? 's name' : ' names'} authorities of another emirate (${esc(words)})${em ? ` – the current project is in ${esc(em)}` : ''}:<ul>${ot.slice(0, 5).map(x => `<li><b>${esc(x.where)}:</b> ${esc(x.text.length > 110 ? x.text.slice(0, 108) + '…' : x.text)}</li>`).join('')}${ot.length > 5 ? `<li>… and ${ot.length - 5} more</li>` : ''}</ul></div>`;
+  }
+  return html;
+}
 function vRefNote(a) {
   const ref = a._ref; if (!ref) return '';
   const built = refEntry(ref.R, a); const sm = refSummary(ref.R, built);
@@ -3728,7 +3841,7 @@ function vRefNote(a) {
     ${sm.std.length ? `<div class="muted">Not in the file, taken from the closest standard (${esc(stdT)}): ${esc(sm.std.join(', '))}.</div>` : ''}
     ${sm.ra === 'haz' ? '<div class="muted">Risk Assessment: not in the file – it will be built from the hazards table; review it on the Risk Assessment tab.</div>' : ''}
     ${ref.R.title && !built.same ? `<div class="muted">The file is for “${esc(ref.R.title)}”; the new Method Statement uses the title above.</div>` : ''}
-    <div class="muted">Project name, client, document numbers and material submittal references in the file are not copied.</div></div>`;
+    ${vRefProj(ref.R, built)}</div>`;
 }
 
 /* ============================================================ runtime capabilities */
