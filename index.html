@@ -1122,7 +1122,7 @@ function editEntry(row) {
 function docNo(row) {
   if (row.docNo) return row.docNo;
   const p = S.settings.pattern || '{PRJ}-MEP-{DISC}-MST-{NNN}';
-  return p.replace(/\{PRJ\}/g, S.project.code || 'PRJ').replace(/\{DISC\}/g, S.settings.disc[row.disc] || row.disc)
+  return p.replace(/\{PRJ\}/g, prjCode()).replace(/\{DISC\}/g, S.settings.disc[row.disc] || row.disc)
     .replace(/\{NNN\}/g, pad(row.seq || 0)).replace(/\{STAGE\}/g, row.stage === 'TC' ? 'TC' : 'INS');
 }
 function revOf(row) { return row.rev || S.settings.rev || '00'; }
@@ -1135,6 +1135,7 @@ function fillParams(text, e) {
 }
 function holdRows(e) { return (e.itp || []).filter(r => [r.oxy, r.mc, r.cons].includes('H')); }
 /* project name and address (user, 11 Nov 2026: "the project name is alone on the top and the address will be below") */
+function prjCode() { return String(S.project.code || '').trim() || 'PRJ'; }   // a space typed before or after the code is not printed (11 Nov 2026)
 function projName() { return String(S.project.name || '').trim(); }
 function projAddr() { return String(S.project.address || '').trim(); }
 function projLines() { const a = projAddr(); return projName() + (a ? '\n' + a : ''); }   // two lines (header, Section 2, attachment tables)
@@ -1155,7 +1156,7 @@ function placedHps(e) {
 }
 function issues(row, e) {
   const out = [];
-  if (!S.project.code || S.project.code === 'PRJ') out.push('Project code not set – document numbers use "PRJ"');
+  if (prjCode() === 'PRJ') out.push('Project code not set – document numbers use "PRJ"');
   if (!S.project.name) out.push('Project name is empty');
   const placed = placedHps(e);
   const itpNos = new Set((e.itp || []).map(r => r.no));
@@ -1591,10 +1592,16 @@ function balance(t, w, sz, b) {   // a line that wraps: broken after the comma t
 }
 function hdrProject(land) {   // the project name with the address below it, at the largest size (14 pt down to 9 pt) that fits the row
   const name = projName() || '[PROJECT NAME]', addr = projAddr(), w = land ? HDR.projW.l : HDR.projW.p;
-  for (const sz of [28, 26, 24, 22, 20, 18]) {
-    const text = balance(name, w, sz) + (addr ? '\n' + balance(addr, w, sz) : '');
-    const n = lineCount(text, w, sz);
-    if (n * lineTw(sz) <= HDR.row2 - 30 || sz === 18) return { sz, n, text };
+  const at = sz => { const ad = addr ? balance(addr, w, sz) : ''; const text = balance(name, w, sz) + (ad ? '\n' + ad : ''); return { sz, text, ad, n: lineCount(text, w, sz) }; };
+  const fits = f => f.n * lineTw(f.sz) <= HDR.row2 - 30;
+  const sizes = [28, 26, 24, 22, 20, 18];
+  for (let i = 0; i < sizes.length; i++) {
+    const f = at(sizes[i]);
+    if (!fits(f) && sizes[i] !== 18) continue;
+    // an address in two lines that could not be broken at a comma: up to 2 pt smaller when that gives even lines
+    if (addr && lineCount(addr, w, f.sz) === 2 && !/,\n/.test(f.ad))
+      for (const g of sizes.slice(i + 1, i + 3).map(at)) if (fits(g) && /,\n/.test(g.ad)) return g;
+    return f;
   }
 }
 function hdrBottom(e) {   // where the body starts on a portrait page (twips from the top of the page)
@@ -1638,7 +1645,7 @@ function testForm(f, e, row, dn, area) {
   const gap = sz => `<w:p>${pPr({ after: 0, line: 240, r: { sz } })}</w:p>`;
   // the empty test rows share the room the page leaves (header, project table, comments and sign-off), so each format
   // fills one page whatever the length of the title or the project name (11 Nov 2026)
-  const mep = Pj.mepContractor || 'OXYPRO ELECTROMECHANICAL WORKS LLC', projNo = Pj.projNo || (Pj.code && Pj.code !== 'PRJ' ? Pj.code : '');
+  const mep = Pj.mepContractor || 'OXYPRO ELECTROMECHANICAL WORKS LLC', projNo = String(Pj.projNo || '').trim() || (prjCode() !== 'PRJ' ? prjCode() : '');
   const rh = (cells, min, sz) => Math.max(min, Math.max(...cells.map(([t, w, b, s2]) => lineCount(t, w - 160, s2 || sz, b) * lineTw(s2 || sz))) + 90);
   const head = `ATTACHMENT 2 – TEST REPORT: ${String(f.title || '').toUpperCase()}`;
   let fixed = lineCount(head, 10247, 24, true) * Math.round(lineTw(24) * 1.5) + 120;
@@ -2021,7 +2028,7 @@ function fileBase(row) { const e = getEntry(row); return slug(`${docNo(row)} Rev
 function itpNoOf(row) {
   if (row.docNo) return /MST/.test(row.docNo) ? row.docNo.replace(/MST/, 'ITP') : row.docNo + '-ITP';
   const p = S.settings.itpPattern || '{PRJ}-MEP-{DISC}-ITP-{NNN}';
-  return p.replace(/\{PRJ\}/g, S.project.code || 'PRJ').replace(/\{DISC\}/g, S.settings.disc[row.disc] || row.disc)
+  return p.replace(/\{PRJ\}/g, prjCode()).replace(/\{DISC\}/g, S.settings.disc[row.disc] || row.disc)
     .replace(/\{NNN\}/g, pad(row.seq || 0)).replace(/\{STAGE\}/g, row.stage === 'TC' ? 'TC' : 'INS');
 }
 function itpFileBase(row) { const e = getEntry(row); return slug(`${itpNoOf(row)} Rev ${revOf(row)} - ITP - ${e.title}`); }
@@ -2053,7 +2060,7 @@ function raScore(L, S) { return (+L || 0) * (+S || 0); }
 /* ---------- numbering: RA number follows the MS (one RA per MS) */
 function raAuto(row) {
   const p = S.settings.raPattern || RA_DEFAULT_PATTERN;
-  return p.replace(/\{PRJ\}/g, S.project.code || 'PRJ').replace(/\{DISC\}/g, S.settings.disc[row.disc] || row.disc)
+  return p.replace(/\{PRJ\}/g, prjCode()).replace(/\{DISC\}/g, S.settings.disc[row.disc] || row.disc)
     .replace(/\{NNN\}/g, pad(row.seq || 0)).replace(/\{STAGE\}/g, row.stage === 'TC' ? 'TC' : 'INS');
 }
 function raNoOf(row) { return (row.raRef || '').trim() || raAuto(row); }
@@ -2187,7 +2194,7 @@ async function buildRaDocx(row, opts = {}) {   // opts.zip: return the JSZip (us
   const ppe = new Set(ra.ppe || []);
   const dash = '____________';
   const tok = {
-    RA_PROJECT: xeLines(projLines()), RA_PROJNO: xe(Pj.projNo || ''), RA_CLIENT: xe(Pj.client), RA_CONSULTANT: xe(Pj.consultant),
+    RA_PROJECT: xeLines(projLines()), RA_PROJNO: xe(String(Pj.projNo || '').trim()), RA_CLIENT: xe(Pj.client), RA_CONSULTANT: xe(Pj.consultant),
     RA_MAINCON: xe(Pj.mainContractor), RA_SUBCON: xe(Pj.mepContractor || 'OXYPRO ELECTROMECHANICAL WORKS LLC'),
     RA_AREA: xe(row.area || Pj.area || ''), RA_ACTIVITY: xe(e.title), RA_NO: xe(raNoOf(row)), RA_REV: xe(raRevOf(row)),
     RA_MSREF: xe(`${docNo(row)} / Rev. ${revOf(row)}`), RA_DATE: xe(fmtDate(dateOf(row))),
@@ -2216,7 +2223,7 @@ async function genRa(row) { const blob = await buildRaDocx(row); await saveFile(
 function msraNoOf(row) {
   if (row.docNo) return /MST/.test(row.docNo) ? row.docNo.replace(/MST/, 'MSRA') : row.docNo + '-MSRA';
   const p = S.settings.msraPattern || '{PRJ}-MEP-{DISC}-MSRA-{NNN}';
-  return p.replace(/\{PRJ\}/g, S.project.code || 'PRJ').replace(/\{DISC\}/g, S.settings.disc[row.disc] || row.disc)
+  return p.replace(/\{PRJ\}/g, prjCode()).replace(/\{DISC\}/g, S.settings.disc[row.disc] || row.disc)
     .replace(/\{NNN\}/g, pad(row.seq || 0)).replace(/\{STAGE\}/g, row.stage === 'TC' ? 'TC' : 'INS');
 }
 function msraFileBase(row) { const e = getEntry(row); return slug(`${msraNoOf(row)} Rev ${revOf(row)} - MSRA - ${e ? e.title : row.title}`); }
@@ -2414,7 +2421,7 @@ const TR_TITLE = 'METHOD STATEMENT SUBMITTAL LOG – TRANSMITTAL';
 const TR_HEADS = ['No.', 'Method Statement Reference No.', 'Rev.', 'Disc.', 'Stage', 'Method Statement Title', 'Submitted Date', 'Status', 'Remarks'];
 
 function trList() { if (!Array.isArray(S.transmittals)) S.transmittals = []; return S.transmittals; }
-function trPrefix() { const c = (S.project.code && S.project.code !== 'PRJ') ? S.project.code : 'PRJ'; return `${c}-MEP-TRN-MS-`; }
+function trPrefix() { const c = prjCode(); return `${c}-MEP-TRN-MS-`; }
 function trNextNo() {
   const pre = trPrefix(); let n = 0;
   trList().forEach(t => { const m = String(t.no || '').match(/(\d+)\s*$/); if (m && String(t.no).startsWith(pre)) n = Math.max(n, +m[1]); });
@@ -3731,7 +3738,7 @@ function rfProjSwaps(P, nos) {
   add(P.mainContractor, Pj.mainContractor || 'the Main Contractor', 'main contractor');
   add(P.mepContractor, Pj.mepContractor || 'OXYPRO ELECTROMECHANICAL WORKS LLC', 'MEP contractor');
   add(P.area, Pj.area || 'the work area', 'location');
-  if (P.code && P.code !== (Pj.code || 'PRJ')) add(P.code, Pj.code || 'PRJ', 'project code');
+  if (P.code && P.code !== prjCode()) add(P.code, prjCode(), 'project code');
   return out.sort((a, b) => (a.kind === 'document number' ? -1 : 0) - (b.kind === 'document number' ? -1 : 0) || b.from.length - a.from.length);
 }
 function rfSwapText(t, swaps, cnt) {
@@ -4765,7 +4772,7 @@ async function genSelected() {
   if (prog) prog.innerHTML = '<div class="muted">Packing the ZIP…</div><div class="progress"><i style="width:100%"></i></div>';
   const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
   if (prog) prog.innerHTML = '';
-  await saveFile(slug(`MS Package - ${S.project.code || 'PRJ'} - ${fmtDate(S.settings.date)}`) + '.zip', blob);
+  await saveFile(slug(`MS Package - ${prjCode()} - ${fmtDate(S.settings.date)}`) + '.zip', blob);
 }
 
 /* ============================================================ Claude */
@@ -5003,7 +5010,7 @@ function startNewProject() {
   fresh.stdList = 2;
   S = fresh; S.ui.view = 'project'; setProjFile(null); save(true); render(); window.scrollTo(0, 0); toast('Blank project started – fill in the project details');
 }
-function projectFileName() { return slug(`MS Project - ${S.project.code && S.project.code !== 'PRJ' ? S.project.code : (S.project.name || 'project')} - ${todayISO()}`) + '.json'; }
+function projectFileName() { return slug(`MS Project - ${prjCode() !== 'PRJ' ? prjCode() : (S.project.name || 'project')} - ${todayISO()}`) + '.json'; }
 function projectBlob() {
   const data = JSON.parse(JSON.stringify(S, (k, v) => (k && k[0] === '_') ? undefined : v)); data.ui = { view: 'register', filter: 'ALL' };
   return new Blob([JSON.stringify(data)], { type: 'application/json' });
